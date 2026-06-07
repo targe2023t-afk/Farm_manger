@@ -33,10 +33,20 @@ workflows:
 
       - name: Fix build.gradle
         script: |
-          cd farm-apk-builder/farm-apk-builder/android/app
-          sed -i 's/compileSdkVersion .*/compileSdkVersion 34/' build.gradle
-          sed -i 's/targetSdkVersion .*/targetSdkVersion 34/' build.gradle
-          sed -i 's/minSdkVersion .*/minSdkVersion 22/' build.gradle
+          python3 -c "
+          import re
+          path = 'farm-apk-builder/farm-apk-builder/android/app/build.gradle'
+          f = open(path, 'r')
+          content = f.read()
+          f.close()
+          content = re.sub(r'compileSdkVersion \d+', 'compileSdkVersion 34', content)
+          content = re.sub(r'targetSdkVersion \d+', 'targetSdkVersion 34', content)
+          content = re.sub(r'minSdkVersion \d+', 'minSdkVersion 22', content)
+          f = open(path, 'w')
+          f.write(content)
+          f.close()
+          print('Done!')
+          "
 
       - name: Build Debug APK
         script: |
