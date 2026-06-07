@@ -1,0 +1,17 @@
+{
+  "appId": "com.farm.manager",
+  "appName": "مزرعة الخير",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#1a7a3c"
+  },
+  "plugins": {
+    "BarcodeScanner": {
+      "cameraPermission": "نحتاج إذن الكاميرا لمسح الباركود"
+    }
+  }
+}
