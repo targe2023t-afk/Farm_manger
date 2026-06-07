@@ -6,35 +6,14 @@ workflows:
       node: 18.17.0
       java: 17
     scripts:
-      - name: Install dependencies
+      - name: Find package.json
         script: |
-          cd farm-apk-builder
-          npm install
-
-      - name: Build web app
-        script: |
-          cd farm-apk-builder
-          npm run build
-
-      - name: Install Capacitor CLI
-        script: |
-          cd farm-apk-builder
-          npm install -g @capacitor/cli
-
-      - name: Add Android platform
-        script: |
-          cd farm-apk-builder
-          npx cap add android || true
-
-      - name: Sync Capacitor
-        script: |
-          cd farm-apk-builder
-          npx cap sync android
-
-      - name: Build Debug APK
-        script: |
-          cd farm-apk-builder/android
-          ./gradlew assembleDebug
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Files here ==="
+          ls -la
+          echo "=== Looking for package.json ==="
+          find . -name "package.json" -not -path "*/node_modules/*"
 
     artifacts:
-      - farm-apk-builder/android/app/build/outputs/**/*.apk
+      - android/app/build/outputs/**/*.apk
