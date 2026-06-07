@@ -31,6 +31,13 @@ workflows:
           cd farm-apk-builder/farm-apk-builder
           npx cap sync android
 
+      - name: Fix build.gradle
+        script: |
+          cd farm-apk-builder/farm-apk-builder/android/app
+          sed -i 's/compileSdkVersion .*/compileSdkVersion 34/' build.gradle
+          sed -i 's/targetSdkVersion .*/targetSdkVersion 34/' build.gradle
+          sed -i 's/minSdkVersion .*/minSdkVersion 22/' build.gradle
+
       - name: Build Debug APK
         script: |
           cd farm-apk-builder/farm-apk-builder/android
