@@ -1,57 +1,24 @@
-workflows:
-  android-workflow:
-    name: Farm Manager APK
-    max_build_duration: 60
-    environment:
-      node: 18.17.0
-      java: 17
-    scripts:
-      - name: Install dependencies
-        script: |
-          cd farm-apk-builder/farm-apk-builder
-          npm install
+# تأكد إنك في الـ root
+cd $CM_BUILD_DIR
 
-      - name: Build web app
-        script: |
-          cd farm-apk-builder/farm-apk-builder
-          npm run build
+# لو المشروع في subfolder، حدد المسار الصح
+# مثلاً لو اسم المجلد farm-manager:
+# cd farm-manager
 
-      - name: Install Capacitor CLI
-        script: |
-          cd farm-apk-builder/farm-apk-builder
-          npm install -g @capacitor/cli
+# ثبّت الباكدجات
+npm install
 
-      - name: Add Android platform
-        script: |
-          cd farm-apk-builder/farm-apk-builder
-          npx cap add android || true
+# ابنِ المشروع
+npm run build
 
-      - name: Sync Capacitor
-        script: |
-          cd farm-apk-builder/farm-apk-builder
-          npx cap sync android
+# زامن مع Capacitor
+npx cap sync android
 
-      - name: Fix build.gradle
-        script: |
-          python3 -c "
-          import re
-          path = 'farm-apk-builder/farm-apk-builder/android/app/build.gradle'
-          f = open(path, 'r')
-          content = f.read()
-          f.close()
-          content = re.sub(r'compileSdkVersion \d+', 'compileSdkVersion 34', content)
-          content = re.sub(r'targetSdkVersion \d+', 'targetSdkVersion 34', content)
-          content = re.sub(r'minSdkVersion \d+', 'minSdkVersion 22', content)
-          f = open(path, 'w')
-          f.write(content)
-          f.close()
-          print('Done!')
-          "
+# انسخ الـ config
+cp android-config/AndroidManifest.xml android/app/src/main/AndroidManifest.xml || true
+cp android-config/build.gradle android/app/build.gradle || true
 
-      - name: Build Debug APK
-        script: |
-          cd farm-apk-builder/farm-apk-builder/android
-          ./gradlew assembleDebug
-
-    artifacts:
-      - farm-apk-builder/farm-apk-builder/android/app/build/outputs/**/*.apk
+# ابنِ APK
+cd android
+chmod +x gradlew
+./gradlew assembleDebug
