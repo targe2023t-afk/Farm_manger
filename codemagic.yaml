@@ -1,0 +1,52 @@
+workflows:
+  android-workflow:
+    name: Farmy Android Build
+    max_build_duration: 60
+    environment:
+      node: 20.0.0
+      java: 17
+    scripts:
+      - name: Install dependencies
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes
+          npm install
+
+      - name: Build web app
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes
+          npm run build
+
+      - name: Add Android platform
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+      - name: Sync Capacitor
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes
+          npx cap sync android
+
+      - name: Copy Android config
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes
+          cp android-config/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp android-config/build.gradle android/app/build.gradle
+
+      - name: Build APK
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes/android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -100
+
+    artifacts:
+      - farmy-fixes/android/app/build/outputs/apk/debug/app-debug.apk
+
+    publishing:
+      email:
+        recipients:
+          - your-email@gmail.com
+        notify:
+          success: true
+          failure: true
