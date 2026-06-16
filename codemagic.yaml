@@ -1,0 +1,64 @@
+workflows:
+  android-workflow:
+    name: Farmy Android Build
+    max_build_duration: 60
+    environment:
+      node: 20.0.0
+      java: 17
+    scripts:
+      - name: Install dependencies
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete
+          npm install
+          npm install @supabase/supabase-js@2
+
+      - name: Build web app
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete
+          npm run build
+
+      - name: Add Android platform
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+      - name: Sync Capacitor
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete
+          npx cap sync android
+
+      - name: Copy Android config
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete
+          cp android-config/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp android-config/build.gradle android/app/build.gradle
+
+      - name: Generate app icons
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete
+          BASE="android/app/src/main/res"
+          rm -rf "$BASE"/mipmap-*
+          for DIR in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+            mkdir -p "$BASE/$DIR"
+            cp "public/icons/icon.png" "$BASE/$DIR/ic_launcher.png"
+            cp "public/icons/icon.png" "$BASE/$DIR/ic_launcher_round.png"
+          done
+
+      - name: Build APK
+        script: |
+          cd $CM_BUILD_DIR/farmy-fixes-complete/android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+    artifacts:
+      - farmy-fixes-complete/android/app/build/outputs/apk/debug/app-debug.apk
+
+    publishing:
+      email:
+        recipients:
+          - your-email@gmail.com
+        notify:
+          success: true
+          failure: true
