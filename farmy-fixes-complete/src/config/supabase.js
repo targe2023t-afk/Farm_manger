@@ -1,16 +1,22 @@
-// ─── supabase.js — باستخدام المكتبة الرسمية ───
+// ─── supabase.js ───
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = "https://eczbanusmdjfeenttusb.supabase.co";
 const SUPABASE_KEY = "sb_publishable_QsfpZIKxlH3WA-nALDXKJw_x44AiHXS";
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false
+  }
+});
 
-// دالة اختبار الاتصال
+// ─── اختبار الاتصال ───
 export async function testConnection() {
   try {
     const { data, error } = await supabase
-      .from('expenses')
+      .from('farms')
       .select('id')
       .limit(1);
 
@@ -26,5 +32,15 @@ export async function testConnection() {
   }
 }
 
-// Export helper for tables
-export const from = (table) => supabase.from(table);
+// ─── الإنتاج ───
+export async function getProduction() {
+  const { data, error } = await supabase
+    .from('production')
+    .select('*')
+    .order('date', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function addProduction(item) {
+  const { data, error }
