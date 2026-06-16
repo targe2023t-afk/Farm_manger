@@ -15,7 +15,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
 
       - name: Setup Java
@@ -28,33 +28,45 @@ jobs:
         uses: android-actions/setup-android@v2
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          cd Farm_manger/farmy-fixes-complete
+          npm install
+          npm install @supabase/supabase-js@2
 
       - name: Build web app
-        run: npm run build
+        run: |
+          cd Farm_manger/farmy-fixes-complete
+          npm run build
 
       - name: Add Capacitor Android
-        run: npx cap add android || true
+        run: |
+          cd Farm_manger/farmy-fixes-complete
+          npx cap add android || true
 
       - name: Sync Capacitor
-        run: npx cap sync android
+        run: |
+          cd Farm_manger/farmy-fixes-complete
+          npx cap sync android
 
       - name: Copy Android configs
         run: |
+          cd Farm_manger/farmy-fixes-complete
           cp android-config/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           cp android-config/build.gradle android/app/build.gradle
 
       - name: Make gradlew executable
-        run: chmod +x android/gradlew
+        run: |
+          cd Farm_manger/farmy-fixes-complete/android
+          chmod +x gradlew
 
       - name: Build APK
         run: |
-          cd android
+          cd Farm_manger/farmy-fixes-complete/android
           ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v3
         with:
-          name: farm-manager-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: farmy-apk
+          path: Farm_manger/farmy-fixes-complete/android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
