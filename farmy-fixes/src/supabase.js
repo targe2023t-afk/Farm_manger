@@ -5,7 +5,6 @@ const SUPABASE_KEY = "sb_publishable_QsfpZIKxlH3WA-nALDXKJw_x44AiHXS";
 const headers = {
   "Content-Type": "application/json",
   "apikey": SUPABASE_KEY,
-  "Authorization": `Bearer ${SUPABASE_KEY}`,
   "Prefer": "return=representation",
 };
 
