@@ -98,19 +98,10 @@ export default function App() {
     if (!rows || rows.length === 0) return;
     setSyncStatus("syncing");
     try {
-      const SUPABASE_URL = "https://eczbanusmdjfeenttusb.supabase.co";
-      const SUPABASE_KEY = "sb_publishable_QsfpZIKxlH3WA-nALDXKJw_x44AiHXS";
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": SUPABASE_KEY,
-          "Authorization": `Bearer ${SUPABASE_KEY}`,
-          "Prefer": "resolution=merge-duplicates,return=minimal",
-        },
-        body: JSON.stringify(rows),
-      });
-      if (!res.ok) throw new Error(await res.text());
+      const { error } = await supabase
+        .from(table)
+        .upsert(rows, { onConflict: "id", ignoreDuplicates: false });
+      if (error) throw new Error(error.message);
       setSyncStatus("synced");
       setTimeout(() => setSyncStatus("local"), 2000);
     } catch(e) {
@@ -138,21 +129,12 @@ export default function App() {
         ["expenses", expenses], ["revenues", revenues],
         ["inventory", inventory], ["workers", workers], ["usage_log", usageLog],
       ];
-      const SUPABASE_URL = "https://eczbanusmdjfeenttusb.supabase.co";
-      const SUPABASE_KEY = "sb_publishable_QsfpZIKxlH3WA-nALDXKJw_x44AiHXS";
       for (const [table, rows] of tables) {
         if (rows?.length) {
-          const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "apikey": SUPABASE_KEY,
-              "Authorization": `Bearer ${SUPABASE_KEY}`,
-              "Prefer": "resolution=merge-duplicates,return=minimal",
-            },
-            body: JSON.stringify(rows),
-          });
-          if (!res.ok) throw new Error(`${table}: ${await res.text()}`);
+          const { error } = await supabase
+            .from(table)
+            .upsert(rows, { onConflict: "id", ignoreDuplicates: false });
+          if (error) throw new Error(`${table}: ${error.message}`);
         }
       }
       setSyncStatus("synced");
@@ -160,6 +142,7 @@ export default function App() {
     } catch(e) {
       setSyncStatus("error");
       showToast("⚠️ فشل الاتصال بالسيرفر");
+      console.error("syncToServer error:", e.message);
     }
     setTimeout(() => setSyncStatus("local"), 3000);
   }, [expenses, revenues, inventory, workers, usageLog, showToast]);
@@ -168,35 +151,23 @@ export default function App() {
     setSyncStatus("syncing");
     const loadFromServer = async () => {
       try {
-        const SUPABASE_URL = "https://eczbanusmdjfeenttusb.supabase.co";
-        const SUPABASE_KEY = "sb_publishable_QsfpZIKxlH3WA-nALDXKJw_x44AiHXS";
-        const h = { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` };
         const fetchTable = async (t) => {
-          const r = await fetch(`${SUPABASE_URL}/rest/v1/${t}?select=*`, { headers: h });
-          if (!r.ok) throw new Error(`${t}: ${r.status}`);
-          return r.json();
+          const { data, error } = await supabase.from(t).select("*");
+          if (error) throw new Error(`${t}: ${error.message}`);
+          return data;
         };
         const [expData, revData, invData, wrkData, useData, usrData] = await Promise.all([
           fetchTable("expenses"), fetchTable("revenues"), fetchTable("inventory"),
           fetchTable("workers"), fetchTable("usage_log"), fetchTable("users"),
         ]);
-        const expRes={data:expData}, revRes={data:revData}, invRes={data:invData};
-        const wrkRes={data:wrkData}, useRes={data:useData}, usrRes={data:usrData};
-        const errors = [expRes,revRes,invRes,wrkRes,useRes,usrRes].filter(r=>r.error);
-        if(errors.length){
-          console.error("Supabase errors:", errors.map(r=>r.error?.message));
-          setSyncStatus("error");
-          setTimeout(()=>setSyncStatus("local"),4000);
-        } else {
-          if (expRes.data?.length) setExpenses(expRes.data);
-          if (revRes.data?.length) setRevenues(revRes.data);
-          if (invRes.data?.length) setInventory(invRes.data);
-          if (wrkRes.data?.length) setWorkers(wrkRes.data);
-          if (useRes.data?.length) setUsageLog(useRes.data);
-          if (usrRes.data?.length) setUsers(usrRes.data);
-          setSyncStatus("synced");
-          setTimeout(()=>setSyncStatus("local"),2000);
-        }
+        if (expData?.length) setExpenses(expData);
+        if (revData?.length) setRevenues(revData);
+        if (invData?.length) setInventory(invData);
+        if (wrkData?.length) setWorkers(wrkData);
+        if (useData?.length) setUsageLog(useData);
+        if (usrData?.length) setUsers(usrData);
+        setSyncStatus("synced");
+        setTimeout(()=>setSyncStatus("local"),2000);
       } catch(e){
         console.error("Load from server error:", e.message);
         setSyncStatus("error");
