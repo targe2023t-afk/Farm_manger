@@ -1,5 +1,5 @@
-// v6.2 — Farmy App — Multi-farm isolation + React import fix
-import React, { useState, useEffect, useCallback, useRef } from "react";
+// v6.3 — Farmy App — Critical Bug Fixes + Multi-farm isolation + Security
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { supabase } from "./config/supabase";
 import "./App.css";
 
@@ -22,8 +22,29 @@ function todayAr(){
   return `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 function fmt(n){ return Number(n||0).toLocaleString("ar-EG"); }
-function daysBetween(a,b){ if(!a) return 0; return Math.max(0,Math.floor((new Date(b||new Date())-new Date(a))/86400000)+1); }
+
+// FIX #7: Correct daysBetween calculation
+function daysBetween(a,b){ 
+  if(!a) return 0; 
+  const start = new Date(a);
+  const end = new Date(b || new Date());
+  // Reset time to midnight for accurate day calculation
+  start.setHours(0,0,0,0);
+  end.setHours(0,0,0,0);
+  const diff = Math.floor((end - start) / 86400000);
+  return Math.max(0, diff + 1); // +1 because both start and end days count
+}
+
 function defPerms(){ return {pages:[...PAGE_KEYS],canEdit:[...PAGE_KEYS],canDelete:[...PAGE_KEYS]}; }
+
+// Simple hash function for passwords (client-side only - server should use bcrypt)
+async function hashPassword(password) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + "farmy_salt_2024");
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 const Nav = {
   home:<svg viewBox="0 0 24 24" fill="currentColor" style={{width:22,height:22}}><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>,
@@ -42,9 +63,10 @@ function createAuditEntry(user, action, entity, oldVal, newVal) {
     userId: user?.id,
     userName: user?.name || user?.username,
     action, entity,
-    oldVal: oldVal ? JSON.stringify(oldVal) : null,
-    newVal: newVal ? JSON.stringify(newVal) : null,
+    oldVal: oldVal ? JSON.stringify(oldVal).slice(0,500) : null, // FIX: Limit size
+    newVal: newVal ? JSON.stringify(newVal).slice(0,500) : null,
     time: new Date().toLocaleString("ar-EG"),
+    farmId: user?.farmId || user?.id || "unknown", // FIX: Add farmId to audit
   };
 }
 
@@ -53,14 +75,14 @@ export default function App() {
   const [page,setPage]             = useState("dashboard");
   const [toast,setToast]           = useState(null);
   const [syncStatus,setSyncStatus] = useState("local");
+  const [isLoading,setIsLoading]   = useState(true); // FIX: Loading state
 
   // ─── GLOBAL users list (shared across all farms) ───────
   const [users,setUsers] = useState(()=>ld("users",[
-    {id:"00000000-0000-0000-0000-000000000001",username:"admin",password:"1234",role:"admin",name:"المدير العام",phone:"",status:"active",farmId:"farm-admin"},
+    {id:"00000000-0000-0000-0000-000000000001",username:"admin",password:"03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",role:"admin",name:"المدير العام",phone:"",status:"active",farmId:"farm-admin"},
   ]));
 
   // ─── PER-FARM DATA ──────────────────────────────────────
-  // Each record has farmId so different users see only their data
   const [expenses,setExpenses]   = useState(()=>ld("expenses",[]));
   const [revenues,setRevenues]   = useState(()=>ld("revenues",[]));
   const [inventory,setInventory] = useState(()=>ld("inventory",[]));
@@ -79,7 +101,7 @@ export default function App() {
   useEffect(()=>sd("inventory",inventory),[inventory]);
   useEffect(()=>sd("workers",workers),[workers]);
   useEffect(()=>sd("usageLog",usageLog),[usageLog]);
-  useEffect(()=>sd("auditLog",auditLog),[auditLog]);
+  useEffect(()=>sd("auditLog",auditLog.slice(0,200)),[auditLog]); // FIX: Limit audit log storage
   useEffect(()=>sd("trE",trE),[trE]);
   useEffect(()=>sd("trR",trR),[trR]);
   useEffect(()=>sd("trI",trI),[trI]);
@@ -87,20 +109,46 @@ export default function App() {
 
   const showToast = useCallback(msg=>{ setToast(msg); setTimeout(()=>setToast(null),2500); },[]);
   const audit = useCallback((action,entity,oldV,newV)=>{
-    setAuditLog(l=>[createAuditEntry(user,action,entity,oldV,newV),...l].slice(0,500));
+    setAuditLog(l=>[createAuditEntry(user,action,entity,oldV,newV),...l].slice(0,200)); // FIX: Limit to 200
   },[user]);
 
   const syncTimerRef   = useRef(null);
   const isFirstRender  = useRef(true);
 
-  // ─── farmId for current user ────────────────────────────
-  const farmId = user?.id || "unknown";
+  // ─── FIX #1: Correct farmId resolution ─────────────────
+  const farmId = useMemo(() => {
+    if (!user) return null;
+    return user.farmId || user.id || "unknown";
+  }, [user]);
+
+  // ─── FIX #2 & #4: addWithFarm with proper validation ───
+  const addWithFarm = useCallback((setter) => (updater) => {
+    setter(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      return next.map(r => {
+        // Only add farmId if it's missing or invalid
+        const hasValidFarmId = r.farmId && r.farmId !== "unknown" && r.farmId !== "" && r.farmId !== null;
+        return hasValidFarmId ? r : {...r, farmId};
+      });
+    });
+  }, [farmId]);
+
+  // FIX: Wrap setters with farmId injection
+  const setMyExpenses  = useMemo(() => addWithFarm(setExpenses), [addWithFarm]);
+  const setMyRevenues  = useMemo(() => addWithFarm(setRevenues), [addWithFarm]);
+  const setMyInventory = useMemo(() => addWithFarm(setInventory), [addWithFarm]);
+  const setMyWorkers   = useMemo(() => addWithFarm(setWorkers), [addWithFarm]);
+  const setMyUsageLog  = useMemo(() => addWithFarm(setUsageLog), [addWithFarm]);
 
   const autoSync = useCallback(async (table, rows) => {
     if (!rows || rows.length === 0) return;
+    // FIX: Only sync rows that belong to current farm
+    const rowsToSync = rows.filter(r => r.farmId === farmId);
+    if (rowsToSync.length === 0) return;
+
     setSyncStatus("syncing");
     try {
-      const { error } = await supabase.from(table).upsert(rows, { onConflict:"id", ignoreDuplicates:false });
+      const { error } = await supabase.from(table).upsert(rowsToSync, { onConflict:"id", ignoreDuplicates:false });
       if (error) throw new Error(error.message);
       setSyncStatus("synced");
       setTimeout(()=>setSyncStatus("local"),2000);
@@ -109,18 +157,42 @@ export default function App() {
       console.error("autoSync ["+table+"]:", e.message);
       setTimeout(()=>setSyncStatus("local"),3000);
     }
-  },[]);
+  },[farmId]);
 
   const debouncedSync = useCallback((table,rows)=>{
     if(syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(()=>autoSync(table,rows),2000);
-  },[autoSync]);
+    // FIX: Ensure rows have farmId before syncing
+    const rowsWithFarm = rows.map(r => r.farmId ? r : {...r, farmId});
+    syncTimerRef.current = setTimeout(()=>autoSync(table,rowsWithFarm),2000);
+  },[autoSync, farmId]);
 
-  useEffect(()=>{ if(isFirstRender.current) return; debouncedSync("expenses",  expenses);  },[expenses]);
-  useEffect(()=>{ if(isFirstRender.current) return; debouncedSync("revenues",  revenues);  },[revenues]);
-  useEffect(()=>{ if(isFirstRender.current) return; debouncedSync("inventory", inventory); },[inventory]);
-  useEffect(()=>{ if(isFirstRender.current) return; debouncedSync("workers",   workers);   },[workers]);
-  useEffect(()=>{ if(isFirstRender.current) return; debouncedSync("usage_log", usageLog);  },[usageLog]);
+  // FIX #5: Separate effects for initial load vs subsequent changes
+  const hasLoaded = useRef(false);
+
+  useEffect(()=>{ 
+    if(!hasLoaded.current) return; // Skip during initial load
+    debouncedSync("expenses", expenses);  
+  },[expenses, debouncedSync]);
+
+  useEffect(()=>{ 
+    if(!hasLoaded.current) return;
+    debouncedSync("revenues", revenues);  
+  },[revenues, debouncedSync]);
+
+  useEffect(()=>{ 
+    if(!hasLoaded.current) return;
+    debouncedSync("inventory", inventory); 
+  },[inventory, debouncedSync]);
+
+  useEffect(()=>{ 
+    if(!hasLoaded.current) return;
+    debouncedSync("workers", workers);   
+  },[workers, debouncedSync]);
+
+  useEffect(()=>{ 
+    if(!hasLoaded.current) return;
+    debouncedSync("usage_log", usageLog);  
+  },[usageLog, debouncedSync]);
 
   const syncToServer = useCallback(async()=>{
     setSyncStatus("syncing");
@@ -130,8 +202,9 @@ export default function App() {
         ["inventory",inventory],["workers",workers],["usage_log",usageLog],
       ];
       for(const [table,rows] of tables){
-        if(rows?.length){
-          const { error } = await supabase.from(table).upsert(rows,{onConflict:"id",ignoreDuplicates:false});
+        const rowsToSync = rows.filter(r => r.farmId === farmId);
+        if(rowsToSync?.length){
+          const { error } = await supabase.from(table).upsert(rowsToSync,{onConflict:"id",ignoreDuplicates:false});
           if(error) throw new Error(`${table}: ${error.message}`);
         }
       }
@@ -142,18 +215,18 @@ export default function App() {
       showToast("⚠️ فشل: "+e.message);
     }
     setTimeout(()=>setSyncStatus("local"),3000);
-  },[expenses,revenues,inventory,workers,usageLog,showToast]);
+  },[expenses,revenues,inventory,workers,usageLog,showToast,farmId]);
 
-  // ─── LOAD FROM SERVER — filter by farmId ───────────────
+  // ─── FIX #3: LOAD FROM SERVER with farmId filter ───────
   useEffect(()=>{
     setSyncStatus("syncing");
+    setIsLoading(true);
     const load = async()=>{
       try {
         // Load users globally (no farm filter)
         const { data: usrData, error: ue } = await supabase.from("users").select("*");
         if(ue) throw new Error("users: "+ue.message);
 
-        // Merge server users with local — server wins for existing IDs
         if(usrData?.length){
           setUsers(prev=>{
             const merged = [...prev];
@@ -166,21 +239,28 @@ export default function App() {
           });
         }
 
-        // Will filter after login — just load all for now
-        const fetchTable = async(t)=>{
-          const { data, error } = await supabase.from(t).select("*");
-          if(error) throw new Error(`${t}: ${error.message}`);
-          return data || [];
-        };
-        const [expData,revData,invData,wrkData,useData] = await Promise.all([
-          fetchTable("expenses"), fetchTable("revenues"), fetchTable("inventory"),
-          fetchTable("workers"),  fetchTable("usage_log"),
-        ]);
-        if(expData.length) setExpenses(expData);
-        if(revData.length) setRevenues(revData);
-        if(invData.length) setInventory(invData);
-        if(wrkData.length) setWorkers(wrkData);
-        if(useData.length) setUsageLog(useData);
+        // FIX: Only load data for current farm if user is logged in
+        if (user?.farmId || user?.id) {
+          const currentFarmId = user.farmId || user.id;
+
+          const fetchTable = async(t)=>{
+            const { data, error } = await supabase.from(t).select("*").eq("farmId", currentFarmId);
+            if(error) throw new Error(`${t}: ${error.message}`);
+            return data || [];
+          };
+
+          const [expData,revData,invData,wrkData,useData] = await Promise.all([
+            fetchTable("expenses"), fetchTable("revenues"), fetchTable("inventory"),
+            fetchTable("workers"),  fetchTable("usage_log"),
+          ]);
+
+          if(expData.length) setExpenses(expData);
+          if(revData.length) setRevenues(revData);
+          if(invData.length) setInventory(invData);
+          if(wrkData.length) setWorkers(wrkData);
+          if(useData.length) setUsageLog(useData);
+        }
+
         setSyncStatus("synced");
         setTimeout(()=>setSyncStatus("local"),2000);
       } catch(e){
@@ -190,39 +270,37 @@ export default function App() {
         setTimeout(()=>setSyncStatus("local"),4000);
       } finally {
         isFirstRender.current = false;
+        hasLoaded.current = true;
+        setIsLoading(false);
       }
     };
     load();
-  },[]);
+  },[]); // Only run once on mount
 
   // ─── FILTER DATA BY CURRENT USER'S farmId ──────────────
-  const myExpenses  = user ? expenses.filter(r=>!r.farmId || r.farmId===farmId)  : [];
-  const myRevenues  = user ? revenues.filter(r=>!r.farmId || r.farmId===farmId)  : [];
-  const myInventory = user ? inventory.filter(r=>!r.farmId || r.farmId===farmId) : [];
-  const myWorkers   = user ? workers.filter(r=>!r.farmId || r.farmId===farmId)   : [];
-  const myUsageLog  = user ? usageLog.filter(r=>!r.farmId || r.farmId===farmId)  : [];
+  const myExpenses  = useMemo(() => user ? expenses.filter(r=>r.farmId===farmId) : [], [user, expenses, farmId]);
+  const myRevenues  = useMemo(() => user ? revenues.filter(r=>r.farmId===farmId) : [], [user, revenues, farmId]);
+  const myInventory = useMemo(() => user ? inventory.filter(r=>r.farmId===farmId) : [], [user, inventory, farmId]);
+  const myWorkers   = useMemo(() => user ? workers.filter(r=>r.farmId===farmId) : [], [user, workers, farmId]);
+  const myUsageLog  = useMemo(() => user ? usageLog.filter(r=>r.farmId===farmId) : [], [user, usageLog, farmId]);
 
-  // Setters that inject farmId automatically
-  const addWithFarm = (setter) => (updater) => {
-    setter(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      return next.map(r => r.farmId ? r : {...r, farmId});
-    });
-  };
-
-  const setMyExpenses  = addWithFarm(setExpenses);
-  const setMyRevenues  = addWithFarm(setRevenues);
-  const setMyInventory = addWithFarm(setInventory);
-  const setMyWorkers   = addWithFarm(setWorkers);
-  const setMyUsageLog  = addWithFarm(setUsageLog);
-
-  const lowStock = myInventory.filter(i=>Number(i.minStock)>0&&Number(i.quantity)<=Number(i.minStock));
+  const lowStock = useMemo(() => myInventory.filter(i=>Number(i.minStock)>0&&Number(i.quantity)<=Number(i.minStock)), [myInventory]);
   const perms    = user?.role==="admin"?defPerms():(user?.permissions||defPerms());
-  const canE     = pg=>user?.role==="admin"||(perms.canEdit||[]).includes(pg);
-  const canD     = pg=>user?.role==="admin"||(perms.canDelete||[]).includes(pg);
+  const canE     = useCallback((pg)=>user?.role==="admin"||(perms.canEdit||[]).includes(pg), [user, perms]);
+  const canD     = useCallback((pg)=>user?.role==="admin"||(perms.canDelete||[]).includes(pg), [user, perms]);
   const pPages   = user?.role==="admin"?[...PAGE_KEYS,"users"]:(perms.pages||PAGE_KEYS);
 
   const [sidebarOpen,setSidebarOpen] = useState(false);
+
+  // FIX: Show loading state
+  if(isLoading) return (
+    <div className="login-wrap" dir="rtl" style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh"}}>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:48,marginBottom:16}}>🌾</div>
+        <div style={{fontSize:18,color:"var(--text2)"}}>جاري التحميل...</div>
+      </div>
+    </div>
+  );
 
   if(!user) return (
     <LoginPage users={users} setUsers={setUsers} onLogin={u=>{
@@ -272,7 +350,7 @@ export default function App() {
               <div className="date-badge">{Nav.cal}<span style={{fontSize:12,color:"rgba(255,255,255,.9)"}}>اليوم: {todayAr()}</span></div>
             </div>
           </>
-        ):(
+       ):(
           <>
             <button className="back-btn" onClick={()=>setPage(pPages[0]||"dashboard")}>←</button>
             <div className="page-title">{pageTitle}</div>
@@ -319,7 +397,7 @@ export default function App() {
                 <div className="sb-item-ic" style={{background:"#ffebee"}}><svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="2" style={{width:20,height:20}}><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg></div>
                 تسجيل الخروج
               </button>
-              <div className="sb-version">farmy v6.2</div>
+              <div className="sb-version">farmy v6.3</div>
             </div>
           </div>
         </>
@@ -335,37 +413,72 @@ function LoginPage({users,setUsers,onLogin}) {
   const [f,setF]=useState({});
   const [err,setErr]=useState("");
   const [ok,setOk]=useState("");
+  const [isSubmitting,setIsSubmitting]=useState(false);
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
 
-  const doLogin=()=>{
-    const u=users.find(x=>x.username===f.username&&x.password===f.password&&x.status==="active");
-    if(u){setErr("");onLogin(u);}else setErr("خطأ في اسم المستخدم أو كلمة المرور");
+  const doLogin=async()=>{
+    if(isSubmitting) return;
+    setIsSubmitting(true);
+    setErr("");
+
+    try {
+      // FIX #6: Hash password before comparison
+      const hashedPassword = await hashPassword(f.password || "");
+      const u=users.find(x=>x.username===f.username && x.password===hashedPassword && x.status==="active");
+
+      if(u){ 
+        setErr("");
+        onLogin(u);
+      } else {
+        setErr("خطأ في اسم المستخدم أو كلمة المرور");
+      }
+    } catch(e) {
+      setErr("حدث خطأ، يرجى المحاولة مرة أخرى");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const doReg=()=>{
+  const doReg=async()=>{
+    if(isSubmitting) return;
+
     if(!f.username||!f.password||!f.fullName){setErr("يرجى ملء الحقول المطلوبة");return;}
     if(f.password!==f.confirmPassword){setErr("كلمة المرور غير متطابقة");return;}
-    // Check username uniqueness in local list only
+    if(f.password.length < 4){setErr("كلمة المرور يجب أن تكون 4 أحرف على الأقل");return;}
+
     if(users.find(u=>u.username===f.username)){setErr("اسم المستخدم موجود بالفعل");return;}
-    const newUser = {
-      id: genUUID(),
-      username: f.username,
-      password: f.password,
-      name: f.fullName,
-      phone: f.phone||"",
-      farmName: f.farmName||"",
-      role: "admin", // new registrations are admins of their own farm
-      status: "active",
-      farmId: genUUID(), // unique farm ID for this user
-      permissions: defPerms(),
-    };
-    setUsers(u=>[...u, newUser]);
-    // Also sync to Supabase
-    supabase.from("users").upsert(newUser, {onConflict:"id"}).then(({error})=>{
+
+    setIsSubmitting(true);
+    try {
+      const newFarmId = genUUID();
+      const hashedPassword = await hashPassword(f.password);
+
+      const newUser = {
+        id: genUUID(),
+        username: f.username,
+        password: hashedPassword, // FIX #16: Store hashed password
+        name: f.fullName,
+        phone: f.phone||"",
+        farmName: f.farmName||"",
+        role: "admin",
+        status: "active",
+        farmId: newFarmId, // Consistent farmId
+        permissions: defPerms(),
+      };
+
+      setUsers(u=>[...u, newUser]);
+
+      // Also sync to Supabase
+      const { error } = await supabase.from("users").upsert(newUser, {onConflict:"id"});
       if(error) console.error("sync new user:", error.message);
-    });
-    setOk("تم إنشاء الحساب بنجاح");setErr("");
-    setTimeout(()=>{setOk("");setTab("login");setF({username:f.username,password:f.password});},1400);
+
+      setOk("تم إنشاء الحساب بنجاح");setErr("");
+      setTimeout(()=>{setOk("");setTab("login");setF({username:f.username,password:f.password});},1400);
+    } catch(e) {
+      setErr("حدث خطأ أثناء إنشاء الحساب");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -386,7 +499,9 @@ function LoginPage({users,setUsers,onLogin}) {
           <>
             <div className="frow"><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
             <div className="frow"><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
-            <button className="save-btn" onClick={doLogin}>تسجيل الدخول</button>
+            <button className="save-btn" onClick={doLogin} disabled={isSubmitting}>
+              {isSubmitting ? "جاري التحميل..." : "تسجيل الدخول"}
+            </button>
           </>
         ):(
           <>
@@ -400,7 +515,9 @@ function LoginPage({users,setUsers,onLogin}) {
               <div><div className="flbl">كلمة المرور *</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
             </div>
             <div className="frow"><div className="flbl">تأكيد كلمة المرور *</div><input className="finp" type="password" value={f.confirmPassword||""} onChange={e=>s("confirmPassword",e.target.value)}/></div>
-            <button className="save-btn" onClick={doReg}>إنشاء الحساب</button>
+            <button className="save-btn" onClick={doReg} disabled={isSubmitting}>
+              {isSubmitting ? "جاري الإنشاء..." : "إنشاء الحساب"}
+            </button>
           </>
         )}
       </div>
@@ -412,6 +529,8 @@ function LoginPage({users,setUsers,onLogin}) {
 function BarcodeScanner({onScan,onClose}) {
   const videoRef=useRef(null); const streamRef=useRef(null);
   const [error,setError]=useState(""); const [manualCode,setManualCode]=useState("");
+  const [hasDetector,setHasDetector]=useState(false);
+
   useEffect(()=>{
     let interval;
     async function startCamera(){
@@ -419,24 +538,46 @@ function BarcodeScanner({onScan,onClose}) {
         const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
         streamRef.current=stream;
         if(videoRef.current){videoRef.current.srcObject=stream;videoRef.current.play();}
+
+        // FIX #12: Check BarcodeDetector support
         if("BarcodeDetector" in window){
+          setHasDetector(true);
           const detector=new window.BarcodeDetector({formats:["ean_13","ean_8","qr_code","code_128","code_39"]});
           interval=setInterval(async()=>{
-            if(videoRef.current){try{const b=await detector.detect(videoRef.current);if(b.length>0){onScan(b[0].rawValue);stopCamera();}}catch(_){}}
+            if(videoRef.current){
+              try{
+                const b=await detector.detect(videoRef.current);
+                if(b.length>0){onScan(b[0].rawValue);stopCamera();}
+              }catch(_){}
+            }
           },500);
+        } else {
+          setError("متصفحك لا يدعم مسح الباركود تلقائياً. يرجى الإدخال اليدوي.");
         }
-      }catch(e){setError("لا يمكن الوصول للكاميرا.");}
+      }catch(e){setError("لا يمكن الوصول للكاميرا. يرجى التأكد من إعطاء الإذن.");}
     }
     const stopCamera=()=>{if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());}clearInterval(interval);};
     startCamera();
     return()=>{if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());}clearInterval(interval);};
   },[onScan]);
+
   return(
     <div className="modal-ov" onClick={onClose}>
       <div className="modal-box" onClick={e=>e.stopPropagation()}>
         <div className="modal-handle"/>
         <div className="modal-title">📷 مسح الباركود</div>
-        {error?<div className="err-msg">{error}</div>:<div className="scan-wrap" style={{margin:"0 0 14px"}}><div className="scan-overlay"><video ref={videoRef} className="scan-video" muted playsInline/><div className="scan-line"/></div></div>}
+        {error?(
+          <div className="err-msg" style={{marginBottom:14}}>{error}</div>
+        ):!hasDetector?(
+          <div style={{textAlign:"center",padding:20,color:"var(--text3)"}}>جاري التحقق من الكاميرا...</div>
+        ):(
+          <div className="scan-wrap" style={{margin:"0 0 14px"}}>
+            <div className="scan-overlay">
+              <video ref={videoRef} className="scan-video" muted playsInline/>
+              <div className="scan-line"/>
+            </div>
+          </div>
+        )}
         <div style={{textAlign:"center",fontSize:12,color:"var(--text3)",marginBottom:12}}>أو أدخل الكود يدوياً</div>
         <div style={{display:"flex",gap:8}}>
           <input className="finp" style={{flex:1}} placeholder="أدخل الباركود..." value={manualCode} onChange={e=>setManualCode(e.target.value)} onKeyDown={e=>e.key==="Enter"&&manualCode&&onScan(manualCode)}/>
@@ -451,20 +592,27 @@ function BarcodeScanner({onScan,onClose}) {
 // ─── DASHBOARD ───────────────────────────────────────────
 function DashPage({expenses,revenues,inventory,workers,lowStock,setPage}) {
   const todayS=todayStr();
-  const totRev=revenues.reduce((s,r)=>s+(Number(r.amount)||0),0);
-  const totExp=expenses.reduce((s,e)=>s+(Number(e.amount)||0),0);
-  const net=totRev-totExp;
-  const todayExp=expenses.filter(e=>e.date===todayS).reduce((s,e)=>s+(Number(e.amount)||0),0);
-  const todayRevItems=revenues.filter(r=>r.date===todayS);
-  const todayExpItems=expenses.filter(e=>e.date===todayS);
+
+  // FIX #10: Use useMemo for calculations
+  const stats = useMemo(() => {
+    const totRev=revenues.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const totExp=expenses.reduce((s,e)=>s+(Number(e.amount)||0),0);
+    const net=totRev-totExp;
+    const todayExp=expenses.filter(e=>e.date===todayS).reduce((s,e)=>s+(Number(e.amount)||0),0);
+    return { totRev, totExp, net, todayExp };
+  }, [expenses, revenues, todayS]);
+
+  const todayRevItems=useMemo(()=>revenues.filter(r=>r.date===todayS),[revenues,todayS]);
+  const todayExpItems=useMemo(()=>expenses.filter(e=>e.date===todayS),[expenses,todayS]);
+
   return(
     <div>
       <div className="stats-row">
         {[
-          {label:"إجمالي الإيرادات",val:totRev,cls:"green",icon:"💰",bg:"si-g"},
-          {label:"إجمالي المصروفات",val:totExp,cls:"red",icon:"🛒",bg:"si-r"},
-          {label:"صافي الربح",val:Math.abs(net),cls:net>=0?"green":"red",icon:"📈",bg:"si-g"},
-          {label:"مشتريات اليوم",val:todayExp,cls:"blue",icon:"🛍️",bg:"si-b"},
+          {label:"إجمالي الإيرادات",val:stats.totRev,cls:"green",icon:"💰",bg:"si-g"},
+          {label:"إجمالي المصروفات",val:stats.totExp,cls:"red",icon:"🛒",bg:"si-r"},
+          {label:"صافي الربح",val:Math.abs(stats.net),cls:stats.net>=0?"green":"red",icon:"📈",bg:"si-g"},
+          {label:"مشتريات اليوم",val:stats.todayExp,cls:"blue",icon:"🛍️",bg:"si-b"},
         ].map((s,i)=>(
           <div key={i} className="stat-card">
             <div className={`stat-icon ${s.bg}`}>{s.icon}</div>
@@ -477,9 +625,9 @@ function DashPage({expenses,revenues,inventory,workers,lowStock,setPage}) {
       <div className="section">
         <div className="section-title">ملخص اليوم</div>
         <div className="summary-card">
-          <div className="sum-row"><span className="sum-label">💰 إجمالي الإيرادات</span><span className="sum-value g">{fmt(totRev)} جنيه</span></div>
-          <div className="sum-row"><span className="sum-label">🛒 إجمالي المصروفات</span><span className="sum-value r">{fmt(totExp)} جنيه</span></div>
-          <div className="sum-row"><span className="sum-label">📊 صافي الربح</span><span className={`sum-value ${net>=0?"g":"r"}`}>{fmt(net)} جنيه</span></div>
+          <div className="sum-row"><span className="sum-label">💰 إجمالي الإيرادات</span><span className="sum-value g">{fmt(stats.totRev)} جنيه</span></div>
+          <div className="sum-row"><span className="sum-label">🛒 إجمالي المصروفات</span><span className="sum-value r">{fmt(stats.totExp)} جنيه</span></div>
+          <div className="sum-row"><span className="sum-label">📊 صافي الربح</span><span className={`sum-value ${stats.net>=0?"g":"r"}`}>{fmt(stats.net)} جنيه</span></div>
         </div>
       </div>
       {lowStock.length>0&&(
@@ -518,19 +666,25 @@ function DashPage({expenses,revenues,inventory,workers,lowStock,setPage}) {
 function ExpPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
   const [showForm,setShowForm]=useState(false);
   const [showR,setShowR]=useState(false);
+  const [showDelConfirm,setShowDelConfirm]=useState(null); // FIX #15: Delete confirmation
   const [edit,setEdit]=useState(null);
   const [f,setF]=useState({});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
   const RECEIPT_TYPES=["فاتورة رسمية","إيصال عادي","بدون إيصال"];
+
   const save=()=>{
+    if(!f.category || !f.amount || !f.date){showToast("يرجى ملء الحقول المطلوبة");return;}
     const item={...f,id:edit?edit.id:genUUID()};
     if(edit){audit("edit","مصروف",edit,item);setData(d=>d.map(i=>i.id===edit.id?item:i));}
     else{audit("add","مصروف",null,item);setData(d=>[...d,item]);}
     setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
   };
-  const del=item=>{audit("delete","مصروف",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");};
+
+  const del=item=>{audit("delete","مصروف",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");setShowDelConfirm(null);};
   const restore=item=>{setData(d=>[...d,item]);setTrash(tr=>tr.filter(i=>i.id!==item.id));showToast("تم الاسترجاع ✓");};
-  const sorted=[...data].sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const sorted=useMemo(()=>[...data].sort((a,b)=>new Date(b.date)-new Date(a.date)),[data]);
+
   return(
     <div>
       {canEdit&&<button className="add-btn-full" onClick={()=>{setF({date:todayStr()});setEdit(null);setShowForm(true);}}>+ إضافة مصروف</button>}
@@ -550,7 +704,7 @@ function ExpPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
               <div className="li-date">{item.date}</div>
               {(canEdit||canDel)&&<div className="li-actions" style={{marginTop:4}}>
                 {canEdit&&<button className="ibt ibt-g" onClick={()=>{setF({...item});setEdit(item);setShowForm(true);}}>✏️</button>}
-                {canDel&&<button className="ibt ibt-r" onClick={()=>del(item)}>🗑️</button>}
+                {canDel&&<button className="ibt ibt-r" onClick={()=>setShowDelConfirm(item)}>🗑️</button>}
               </div>}
             </div>
           </div>
@@ -561,7 +715,7 @@ function ExpPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
           <div className="modal-box" onClick={e=>e.stopPropagation()}>
             <div className="modal-handle"/>
             <div className="modal-title">{edit?"تعديل المصروف":"+ إضافة مصروف"}</div>
-            <div className="frow"><div className="flbl">نوع المصروف</div>
+            <div className="frow"><div className="flbl">نوع المصروف *</div>
               <select className="finp" value={f.category||""} onChange={e=>s("category",e.target.value)}>
                 <option value="">اختر نوع المصروف</option>{EXP_TYPES.map(x=><option key={x}>{x}</option>)}
               </select></div>
@@ -570,8 +724,8 @@ function ExpPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
                 <option value="">اختر نوع الإيصال</option>{RECEIPT_TYPES.map(x=><option key={x}>{x}</option>)}
               </select></div>
             <div className="frow2">
-              <div><div className="flbl">المبلغ (جنيه)</div><input className="finp" type="number" value={f.amount||""} onChange={e=>s("amount",e.target.value)}/></div>
-              <div><div className="flbl">التاريخ</div><input className="finp" type="date" value={f.date||""} onChange={e=>s("date",e.target.value)}/></div>
+              <div><div className="flbl">المبلغ (جنيه) *</div><input className="finp" type="number" min="0" value={f.amount||""} onChange={e=>s("amount",e.target.value)}/></div>
+              <div><div className="flbl">التاريخ *</div><input className="finp" type="date" value={f.date||""} onChange={e=>s("date",e.target.value)}/></div>
             </div>
             <div className="frow"><div className="flbl">ملاحظات</div><input className="finp" value={f.notes||""} onChange={e=>s("notes",e.target.value)}/></div>
             <button className="save-btn" onClick={save}>حفظ</button>
@@ -579,6 +733,23 @@ function ExpPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
         </div>
       )}
       {showR&&<RestoreModal trash={trash} onRestore={restore} onClose={()=>setShowR(false)}/>}
+
+      {/* FIX #15: Delete Confirmation Modal */}
+      {showDelConfirm&&(
+        <div className="modal-ov" onClick={()=>setShowDelConfirm(null)}>
+          <div className="modal-box" onClick={e=>e.stopPropagation()}>
+            <div className="modal-handle"/>
+            <div className="modal-title">⚠️ تأكيد الحذف</div>
+            <div style={{textAlign:"center",padding:"20px 0",color:"var(--text2)"}}>
+              هل أنت متأكد من حذف <b>{showDelConfirm.category}</b> بقيمة <b>{fmt(showDelConfirm.amount)} جنيه</b>؟
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="save-btn" style={{background:"var(--red)"}} onClick={()=>del(showDelConfirm)}>نعم، احذف</button>
+              <button style={{flex:1,padding:12,background:"var(--bg)",border:"1px solid var(--border)",borderRadius:10,fontFamily:"'Cairo',sans-serif",cursor:"pointer"}} onClick={()=>setShowDelConfirm(null)}>إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -587,22 +758,29 @@ function ExpPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
 function RevPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
   const [showForm,setShowForm]=useState(false);
   const [showR,setShowR]=useState(false);
+  const [showDelConfirm,setShowDelConfirm]=useState(null);
   const [edit,setEdit]=useState(null);
   const [f,setF]=useState({});
-  const s=(k,v)=>setF(x=>{
+
+  const s=useCallback((k,v)=>setF(x=>{
     const nf={...x,[k]:v};
     if(k==="quantity"||k==="price"){nf.amount=(Number(k==="quantity"?v:nf.quantity)||0)*(Number(k==="price"?v:nf.price)||0);}
     return nf;
-  });
+  }),[]);
+
   const save=()=>{
+    if(!f.product || !f.amount || !f.date){showToast("يرجى ملء الحقول المطلوبة");return;}
     const item={...f,id:edit?edit.id:genUUID()};
     if(edit){audit("edit","إيراد",edit,item);setData(d=>d.map(i=>i.id===edit.id?item:i));}
     else{audit("add","إيراد",null,item);setData(d=>[...d,item]);}
     setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
   };
-  const del=item=>{audit("delete","إيراد",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");};
+
+  const del=item=>{audit("delete","إيراد",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");setShowDelConfirm(null);};
   const restore=item=>{setData(d=>[...d,item]);setTrash(tr=>tr.filter(i=>i.id!==item.id));showToast("تم الاسترجاع ✓");};
-  const sorted=[...data].sort((a,b)=>new Date(b.date)-new Date(a.date));
+
+  const sorted=useMemo(()=>[...data].sort((a,b)=>new Date(b.date)-new Date(a.date)),[data]);
+
   return(
     <div>
       {canEdit&&<button className="add-btn-full" onClick={()=>{setF({date:todayStr()});setEdit(null);setShowForm(true);}}>+ إضافة إيراد</button>}
@@ -622,7 +800,7 @@ function RevPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
               <div className="li-date">جنيه</div>
               {(canEdit||canDel)&&<div className="li-actions" style={{marginTop:4}}>
                 {canEdit&&<button className="ibt ibt-g" onClick={()=>{setF({...item});setEdit(item);setShowForm(true);}}>✏️</button>}
-                {canDel&&<button className="ibt ibt-r" onClick={()=>del(item)}>🗑️</button>}
+                {canDel&&<button className="ibt ibt-r" onClick={()=>setShowDelConfirm(item)}>🗑️</button>}
               </div>}
             </div>
           </div>
@@ -633,17 +811,17 @@ function RevPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
           <div className="modal-box" onClick={e=>e.stopPropagation()}>
             <div className="modal-handle"/>
             <div className="modal-title">{edit?"تعديل الإيراد":"+ إضافة إيراد"}</div>
-            <div className="frow"><div className="flbl">نوع الإيراد</div>
+            <div className="frow"><div className="flbl">نوع الإيراد *</div>
               <select className="finp" value={f.product||""} onChange={e=>s("product",e.target.value)}>
                 <option value="">اختر نوع الإيراد</option>{REV_TYPES.map(x=><option key={x}>{x}</option>)}
               </select></div>
             <div className="frow2">
-              <div><div className="flbl">الكمية</div><input className="finp" type="number" value={f.quantity||""} onChange={e=>s("quantity",e.target.value)}/></div>
-              <div><div className="flbl">سعر البيع</div><input className="finp" type="number" value={f.price||""} onChange={e=>s("price",e.target.value)}/></div>
+              <div><div className="flbl">الكمية</div><input className="finp" type="number" min="0" value={f.quantity||""} onChange={e=>s("quantity",e.target.value)}/></div>
+              <div><div className="flbl">سعر البيع</div><input className="finp" type="number" min="0" value={f.price||""} onChange={e=>s("price",e.target.value)}/></div>
             </div>
             <div className="frow2">
               <div><div className="flbl">المبلغ (تلقائي)</div><input className="finp ro" readOnly value={f.amount||0}/></div>
-              <div><div className="flbl">التاريخ</div><input className="finp" type="date" value={f.date||""} onChange={e=>s("date",e.target.value)}/></div>
+              <div><div className="flbl">التاريخ *</div><input className="finp" type="date" value={f.date||""} onChange={e=>s("date",e.target.value)}/></div>
             </div>
             <div className="frow2">
               <div><div className="flbl">اسم التاجر</div><input className="finp" value={f.traderName||""} onChange={e=>s("traderName",e.target.value)}/></div>
@@ -655,6 +833,22 @@ function RevPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
         </div>
       )}
       {showR&&<RestoreModal trash={trash} onRestore={restore} onClose={()=>setShowR(false)}/>}
+
+      {showDelConfirm&&(
+        <div className="modal-ov" onClick={()=>setShowDelConfirm(null)}>
+          <div className="modal-box" onClick={e=>e.stopPropagation()}>
+            <div className="modal-handle"/>
+            <div className="modal-title">⚠️ تأكيد الحذف</div>
+            <div style={{textAlign:"center",padding:"20px 0",color:"var(--text2)"}}>
+              هل أنت متأكد من حذف إيراد <b>{showDelConfirm.product}</b> بقيمة <b>{fmt(showDelConfirm.amount)} جنيه</b>؟
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="save-btn" style={{background:"var(--red)"}} onClick={()=>del(showDelConfirm)}>نعم، احذف</button>
+              <button style={{flex:1,padding:12,background:"var(--bg)",border:"1px solid var(--border)",borderRadius:10,fontFamily:"'Cairo',sans-serif",cursor:"pointer"}} onClick={()=>setShowDelConfirm(null)}>إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -664,36 +858,46 @@ function InvPage({data,setData,trash,setTrash,usageLog,setUsageLog,canEdit,canDe
   const [showForm,setShowForm]=useState(false);
   const [showR,setShowR]=useState(false);
   const [showScanner,setShowScanner]=useState(false);
+  const [showDelConfirm,setShowDelConfirm]=useState(null);
   const [useItem,setUse]=useState(null);
   const [edit,setEdit]=useState(null);
   const [f,setF]=useState({});
   const [useQty,setUQ]=useState("");
   const [q,setQ]=useState("");
+
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
+
   const save=()=>{
+    if(!f.name || !f.type){showToast("يرجى ملء الاسم والنوع");return;}
     const item={...f,id:edit?edit.id:genUUID()};
     if(edit){audit("edit","مخزون",edit,item);setData(d=>d.map(i=>i.id===edit.id?item:i));}
     else{audit("add","مخزون",null,item);setData(d=>[...d,item]);}
     setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
   };
-  const del=item=>{audit("delete","مخزون",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");};
+
+  const del=item=>{audit("delete","مخزون",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");setShowDelConfirm(null);};
   const restore=item=>{setData(d=>[...d,item]);setTrash(tr=>tr.filter(i=>i.id!==item.id));showToast("تم الاسترجاع ✓");};
+
   const doUse=()=>{
     const qty=Number(useQty);
     if(!qty||qty<=0){showToast("أدخل كمية صحيحة");return;}
+    if(qty > Number(useItem.quantity)){showToast("الكمية المطلوبة أكبر من المتاح");return;}
     const updated={...useItem,quantity:Math.max(0,Number(useItem.quantity)-qty)};
     audit("edit","استخدام مخزون",useItem,updated);
     setData(d=>d.map(i=>i.id===useItem.id?updated:i));
     setUsageLog(l=>[...l,{id:genUUID(),itemName:useItem.name,qty,date:todayStr()}]);
     setUse(null);setUQ("");showToast("تم الخصم من المخزن ✓");
   };
+
   const handleScan=(code)=>{
     setShowScanner(false);
     const found=data.find(i=>i.barcode===code);
     if(found){setUse(found);setUQ("");showToast(`✅ تم العثور على: ${found.name}`);}
     else{setF({barcode:code});setEdit(null);setShowForm(true);showToast("باركود جديد - أكمل البيانات");}
   };
-  const filtered=data.filter(i=>(i.name||"").includes(q)||(i.barcode||"").includes(q)||(i.type||"").includes(q));
+
+  const filtered=useMemo(()=>data.filter(i=>(i.name||"").includes(q)||(i.barcode||"").includes(q)||(i.type||"").includes(q)),[data,q]);
+
   return(
     <div>
       <div className="search-bar">
@@ -722,7 +926,7 @@ function InvPage({data,setData,trash,setTrash,usageLog,setUsageLog,canEdit,canDe
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
                 {canEdit&&<button className="use-btn" onClick={()=>{setUse(item);setUQ("");}}>استخدام</button>}
                 {canEdit&&<button className="ibt ibt-g" onClick={()=>{setF({...item});setEdit(item);setShowForm(true);}}>✏️</button>}
-                {canDel&&<button className="ibt ibt-r" onClick={()=>del(item)}>🗑️</button>}
+                {canDel&&<button className="ibt ibt-r" onClick={()=>setShowDelConfirm(item)}>🗑️</button>}
               </div>
             </div>
             <div className="inv-rows">
@@ -745,16 +949,16 @@ function InvPage({data,setData,trash,setTrash,usageLog,setUsageLog,canEdit,canDe
               <button style={{height:42,padding:"0 12px",background:"#1565c0",color:"#fff",border:"none",borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontFamily:"'Cairo',sans-serif",fontSize:13,fontWeight:700}} onClick={()=>{setShowForm(false);setShowScanner(true);}}>{Nav.scan} مسح</button>
             </div>
             <div className="frow2">
-              <div><div className="flbl">الاسم</div><input className="finp" value={f.name||""} onChange={e=>s("name",e.target.value)}/></div>
-              <div><div className="flbl">النوع</div><select className="finp" value={f.type||""} onChange={e=>s("type",e.target.value)}><option value="">اختر النوع</option>{INV_TYPES.map(x=><option key={x}>{x}</option>)}</select></div>
+              <div><div className="flbl">الاسم *</div><input className="finp" value={f.name||""} onChange={e=>s("name",e.target.value)}/></div>
+              <div><div className="flbl">النوع *</div><select className="finp" value={f.type||""} onChange={e=>s("type",e.target.value)}><option value="">اختر النوع</option>{INV_TYPES.map(x=><option key={x}>{x}</option>)}</select></div>
             </div>
             <div className="frow2">
-              <div><div className="flbl">الكمية</div><input className="finp" type="number" value={f.quantity||""} onChange={e=>s("quantity",e.target.value)}/></div>
+              <div><div className="flbl">الكمية</div><input className="finp" type="number" min="0" value={f.quantity||""} onChange={e=>s("quantity",e.target.value)}/></div>
               <div><div className="flbl">الوحدة</div><select className="finp" value={f.unit||""} onChange={e=>s("unit",e.target.value)}><option value="">الوحدة</option>{["كجم","طن","لتر","عبوة","قطعة"].map(x=><option key={x}>{x}</option>)}</select></div>
             </div>
             <div className="frow2">
-              <div><div className="flbl">الحد الأدنى</div><input className="finp" type="number" value={f.minStock||""} onChange={e=>s("minStock",e.target.value)}/></div>
-              <div><div className="flbl">سعر الوحدة</div><input className="finp" type="number" value={f.price||""} onChange={e=>s("price",e.target.value)}/></div>
+              <div><div className="flbl">الحد الأدنى</div><input className="finp" type="number" min="0" value={f.minStock||""} onChange={e=>s("minStock",e.target.value)}/></div>
+              <div><div className="flbl">سعر الوحدة</div><input className="finp" type="number" min="0" value={f.price||""} onChange={e=>s("price",e.target.value)}/></div>
             </div>
             <button className="save-btn" onClick={save}>حفظ</button>
           </div>
@@ -766,12 +970,28 @@ function InvPage({data,setData,trash,setTrash,usageLog,setUsageLog,canEdit,canDe
             <div className="modal-handle"/>
             <div className="modal-title">استخدام من المخزن — {useItem.name}</div>
             <div style={{background:"var(--green3)",borderRadius:10,padding:"10px 14px",marginBottom:14,fontSize:13}}><span style={{color:"var(--text2)"}}>المتاح: </span><b style={{color:"var(--green)"}}>{fmt(useItem.quantity)} {useItem.unit}</b></div>
-            <div className="frow"><div className="flbl">الكمية المستخدمة</div><input className="finp" type="number" value={useQty} onChange={e=>setUQ(e.target.value)} autoFocus/></div>
+            <div className="frow"><div className="flbl">الكمية المستخدمة</div><input className="finp" type="number" min="1" max={useItem.quantity} value={useQty} onChange={e=>setUQ(e.target.value)} autoFocus/></div>
             <button className="save-btn" onClick={doUse}>تأكيد الاستخدام</button>
           </div>
         </div>
       )}
       {showR&&<RestoreModal trash={trash} onRestore={restore} onClose={()=>setShowR(false)}/>}
+
+      {showDelConfirm&&(
+        <div className="modal-ov" onClick={()=>setShowDelConfirm(null)}>
+          <div className="modal-box" onClick={e=>e.stopPropagation()}>
+            <div className="modal-handle"/>
+            <div className="modal-title">⚠️ تأكيد الحذف</div>
+            <div style={{textAlign:"center",padding:"20px 0",color:"var(--text2)"}}>
+              هل أنت متأكد من حذف <b>{showDelConfirm.name}</b>؟
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="save-btn" style={{background:"var(--red)"}} onClick={()=>del(showDelConfirm)}>نعم، احذف</button>
+              <button style={{flex:1,padding:12,background:"var(--bg)",border:"1px solid var(--border)",borderRadius:10,fontFamily:"'Cairo',sans-serif",cursor:"pointer"}} onClick={()=>setShowDelConfirm(null)}>إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -780,29 +1000,40 @@ function InvPage({data,setData,trash,setTrash,usageLog,setUsageLog,canEdit,canDe
 function WrkPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
   const [showForm,setShowForm]=useState(false);
   const [showR,setShowR]=useState(false);
+  const [showDelConfirm,setShowDelConfirm]=useState(null);
   const [edit,setEdit]=useState(null);
   const [f,setF]=useState({});
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
+
   const days=w=>daysBetween(w.startDate,w.endDate||null);
   const total=w=>days(w)*(Number(w.dailyRate)||0);
-  const active=data.filter(w=>!w.endDate).length;
-  const todayCost=data.filter(w=>!w.endDate).reduce((s,w)=>s+(Number(w.dailyRate)||0),0);
+
+  const stats = useMemo(() => {
+    const active=data.filter(w=>!w.endDate).length;
+    const todayCost=data.filter(w=>!w.endDate).reduce((s,w)=>s+(Number(w.dailyRate)||0),0);
+    return { active, todayCost };
+  }, [data]);
+
   const save=()=>{
+    if(!f.name || !f.dailyRate || !f.startDate){showToast("يرجى ملء الحقول المطلوبة");return;}
     const item={...f,id:edit?edit.id:genUUID()};
     if(edit){audit("edit","عامل",edit,item);setData(d=>d.map(i=>i.id===edit.id?item:i));}
     else{audit("add","عامل",null,item);setData(d=>[...d,item]);}
     setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
   };
-  const del=item=>{audit("delete","عامل",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");};
+
+  const del=item=>{audit("delete","عامل",item,null);setTrash(tr=>[{...item,_d:Date.now()},...tr]);setData(d=>d.filter(i=>i.id!==item.id));showToast("تم الحذف");setShowDelConfirm(null);};
   const restore=item=>{setData(d=>[...d,item]);setTrash(tr=>tr.filter(i=>i.id!==item.id));showToast("تم الاسترجاع ✓");};
+
   const checkout=w=>{audit("edit","خروج عامل",w,{...w,endDate:todayStr()});setData(d=>d.map(i=>i.id===w.id?{...i,endDate:todayStr()}:i));showToast("تم تسجيل الخروج ✓");};
+
   return(
     <div>
       <div style={{margin:"14px 14px 0",background:"var(--white)",borderRadius:14,padding:16,boxShadow:"var(--shadow)"}}>
         <div style={{display:"flex",gap:14}}>
-          <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:"var(--text3)",marginBottom:4}}>إجمالي عدد العمال</div><div style={{fontSize:28,fontWeight:900,color:"var(--text)"}}>{active}</div></div>
+          <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:"var(--text3)",marginBottom:4}}>إجمالي عدد العمال</div><div style={{fontSize:28,fontWeight:900,color:"var(--text)"}}>{stats.active}</div></div>
           <div style={{width:1,background:"var(--border)"}}/>
-          <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:"var(--text3)",marginBottom:4}}>تكلفة العمالة اليوم</div><div style={{fontSize:22,fontWeight:900,color:"var(--green)"}}>{fmt(todayCost)}</div><div style={{fontSize:11,color:"var(--text3)"}}>جنيه</div></div>
+          <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:"var(--text3)",marginBottom:4}}>تكلفة العمالة اليوم</div><div style={{fontSize:22,fontWeight:900,color:"var(--green)"}}>{fmt(stats.todayCost)}</div><div style={{fontSize:11,color:"var(--text3)"}}>جنيه</div></div>
         </div>
       </div>
       {canEdit&&<button className="add-btn-full" style={{marginTop:12}} onClick={()=>{setF({startDate:todayStr()});setEdit(null);setShowForm(true);}}>+ إضافة عامل</button>}
@@ -823,7 +1054,7 @@ function WrkPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
               <div style={{display:"flex",gap:4,marginTop:6,justifyContent:"center"}}>
                 {canEdit&&isActive&&<button className="ibt ibt-g" onClick={()=>checkout(item)}>✔️</button>}
                 {canEdit&&<button className="ibt ibt-g" onClick={()=>{setF({...item});setEdit(item);setShowForm(true);}}>✏️</button>}
-                {canDel&&<button className="ibt ibt-r" onClick={()=>del(item)}>🗑️</button>}
+                {canDel&&<button className="ibt ibt-r" onClick={()=>setShowDelConfirm(item)}>🗑️</button>}
               </div>
             </div>
           </div>
@@ -835,16 +1066,16 @@ function WrkPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
             <div className="modal-handle"/>
             <div className="modal-title">{edit?"تعديل بيانات العامل":"+ إضافة عامل"}</div>
             <div className="frow2">
-              <div><div className="flbl">الاسم</div><input className="finp" value={f.name||""} onChange={e=>s("name",e.target.value)}/></div>
+              <div><div className="flbl">الاسم *</div><input className="finp" value={f.name||""} onChange={e=>s("name",e.target.value)}/></div>
               <div><div className="flbl">الهاتف</div><input className="finp" value={f.phone||""} onChange={e=>s("phone",e.target.value)}/></div>
             </div>
             <div className="frow2">
-              <div><div className="flbl">تاريخ البداية</div><input className="finp" type="date" value={f.startDate||""} onChange={e=>s("startDate",e.target.value)}/></div>
+              <div><div className="flbl">تاريخ البداية *</div><input className="finp" type="date" value={f.startDate||""} onChange={e=>s("startDate",e.target.value)}/></div>
               <div><div className="flbl">تاريخ الانتهاء</div><input className="finp" type="date" value={f.endDate||""} onChange={e=>s("endDate",e.target.value)}/></div>
             </div>
             <div className="frow2">
-              <div><div className="flbl">الأجر اليومي</div><input className="finp" type="number" value={f.dailyRate||""} onChange={e=>s("dailyRate",e.target.value)}/></div>
-              <div><div className="flbl">المدفوع</div><input className="finp" type="number" value={f.paid||""} onChange={e=>s("paid",e.target.value)}/></div>
+              <div><div className="flbl">الأجر اليومي *</div><input className="finp" type="number" min="0" value={f.dailyRate||""} onChange={e=>s("dailyRate",e.target.value)}/></div>
+              <div><div className="flbl">المدفوع</div><input className="finp" type="number" min="0" value={f.paid||""} onChange={e=>s("paid",e.target.value)}/></div>
             </div>
             {f.startDate&&f.dailyRate&&<div style={{background:"var(--green3)",borderRadius:8,padding:"8px 12px",fontSize:12,marginBottom:10}}>أيام: <b>{daysBetween(f.startDate,f.endDate||null)}</b> · إجمالي: <b style={{color:"var(--green)"}}>{fmt(daysBetween(f.startDate,f.endDate||null)*(Number(f.dailyRate)||0))}</b> جنيه</div>}
             <button className="save-btn" onClick={save}>حفظ</button>
@@ -852,6 +1083,22 @@ function WrkPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
         </div>
       )}
       {showR&&<RestoreModal trash={trash} onRestore={restore} onClose={()=>setShowR(false)}/>}
+
+      {showDelConfirm&&(
+        <div className="modal-ov" onClick={()=>setShowDelConfirm(null)}>
+          <div className="modal-box" onClick={e=>e.stopPropagation()}>
+            <div className="modal-handle"/>
+            <div className="modal-title">⚠️ تأكيد الحذف</div>
+            <div style={{textAlign:"center",padding:"20px 0",color:"var(--text2)"}}>
+              هل أنت متأكد من حذف العامل <b>{showDelConfirm.name}</b>؟
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="save-btn" style={{background:"var(--red)"}} onClick={()=>del(showDelConfirm)}>نعم، احذف</button>
+              <button style={{flex:1,padding:12,background:"var(--bg)",border:"1px solid var(--border)",borderRadius:10,fontFamily:"'Cairo',sans-serif",cursor:"pointer"}} onClick={()=>setShowDelConfirm(null)}>إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -861,30 +1108,40 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
   const [period,setPeriod]=useState("daily");
   const [selDate,setSelDate]=useState(todayStr());
   const [repTab,setRepTab]=useState("financial");
-  const filtered=(arr,dk)=>{
+
+  const filtered=useCallback((arr,dk)=>{
     if(period==="daily") return arr.filter(i=>i[dk]===selDate);
     if(period==="monthly") return arr.filter(i=>(i[dk]||"").startsWith(selDate.slice(0,7)));
     if(period==="seasonal"){const m=new Date(selDate).getMonth();const s=m<3||m===11?[11,0,1,2]:m<6?[3,4,5]:m<9?[6,7,8]:[9,10,11];return arr.filter(i=>s.includes(new Date(i[dk]).getMonth()));}
     return arr.filter(i=>(i[dk]||"").startsWith(selDate.slice(0,4)));
-  };
-  const fExp=filtered(expenses,"date"),fRev=filtered(revenues,"date");
-  const totRev=fRev.reduce((s,r)=>s+(Number(r.amount)||0),0);
-  const totExp=fExp.reduce((s,e)=>s+(Number(e.amount)||0),0);
-  const wCost=workers.reduce((s,w)=>s+daysBetween(w.startDate,w.endDate||null)*(Number(w.dailyRate)||0),0);
-  const wPaid=workers.reduce((s,w)=>s+(Number(w.paid)||0),0);
-  const netProfit=totRev-totExp-wCost;
-  const invValue=inventory.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.price)||0),0);
-  const days5=[...Array(5)].map((_,i)=>{
+  },[period,selDate]);
+
+  const fExp=useMemo(()=>filtered(expenses,"date"),[filtered,expenses]);
+  const fRev=useMemo(()=>filtered(revenues,"date"),[filtered,revenues]);
+
+  const stats = useMemo(() => {
+    const totRev=fRev.reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const totExp=fExp.reduce((s,e)=>s+(Number(e.amount)||0),0);
+    const wCost=workers.reduce((s,w)=>s+daysBetween(w.startDate,w.endDate||null)*(Number(w.dailyRate)||0),0);
+    const wPaid=workers.reduce((s,w)=>s+(Number(w.paid)||0),0);
+    const netProfit=totRev-totExp-wCost;
+    const invValue=inventory.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.price)||0),0);
+    return { totRev, totExp, wCost, wPaid, netProfit, invValue };
+  }, [fRev, fExp, workers, inventory]);
+
+  const days5=useMemo(()=>[...Array(5)].map((_,i)=>{
     const d=new Date();d.setDate(d.getDate()-4+i);
     const ds=d.toISOString().split("T")[0];
     const r=revenues.filter(x=>x.date===ds).reduce((s,x)=>s+(Number(x.amount)||0),0);
     const e=expenses.filter(x=>x.date===ds).reduce((s,x)=>s+(Number(x.amount)||0),0);
     return {label:`${d.getDate()}/${d.getMonth()+1}`,r,e};
-  });
+  }),[revenues,expenses]);
+
   const maxV=Math.max(...days5.map(d=>Math.max(d.r,d.e)),1);
   const TABS=[{k:"daily",l:"يومي"},{k:"monthly",l:"شهري"},{k:"seasonal",l:"موسمي"},{k:"yearly",l:"سنة"}];
   const REP_TABS=[{k:"financial",l:"مالي"},{k:"workers",l:"العمالة"},{k:"inventory",l:"المخزن"},{k:"audit",l:"سجل التغييرات"}];
   const getUserName=id=>{const u=users.find(x=>x.id===id);return u?u.name:"مجهول";};
+
   return(
     <div>
       <div className="rep-tabs">{TABS.map(tb=><button key={tb.k} className={`rep-tab ${period===tb.k?"on":""}`} onClick={()=>setPeriod(tb.k)}>{tb.l}</button>)}</div>
@@ -895,12 +1152,12 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
           <div className="section" style={{marginTop:12}}>
             <div className="section-title">ملخص التقرير المالي</div>
             <div className="summary-card">
-              <div className="sum-row"><span className="sum-label">💰 إجمالي الإيرادات</span><span className="sum-value g">{fmt(totRev)} جنيه</span></div>
-              <div className="sum-row"><span className="sum-label">🛒 إجمالي المصروفات</span><span className="sum-value r">{fmt(totExp)} جنيه</span></div>
-              <div className="sum-row"><span className="sum-label">👷 تكلفة العمالة</span><span className="sum-value r">{fmt(wCost)} جنيه</span></div>
+              <div className="sum-row"><span className="sum-label">💰 إجمالي الإيرادات</span><span className="sum-value g">{fmt(stats.totRev)} جنيه</span></div>
+              <div className="sum-row"><span className="sum-label">🛒 إجمالي المصروفات</span><span className="sum-value r">{fmt(stats.totExp)} جنيه</span></div>
+              <div className="sum-row"><span className="sum-label">👷 تكلفة العمالة</span><span className="sum-value r">{fmt(stats.wCost)} جنيه</span></div>
               <div className="sum-row" style={{background:"var(--green3)",borderRadius:8,padding:"8px 10px",margin:"4px 0"}}>
                 <span className="sum-label" style={{fontWeight:700}}>📊 صافي الربح الحقيقي</span>
-                <span className={`sum-value ${netProfit>=0?"g":"r"}`} style={{fontSize:15}}>{fmt(netProfit)} جنيه</span>
+                <span className={`sum-value ${stats.netProfit>=0?"g":"r"}`} style={{fontSize:15}}>{fmt(stats.netProfit)} جنيه</span>
               </div>
             </div>
           </div>
@@ -929,9 +1186,9 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
           <div className="summary-card">
             <div className="sum-row"><span className="sum-label">👷 عدد العمال</span><span className="sum-value b">{workers.length}</span></div>
             <div className="sum-row"><span className="sum-label">✅ الحاضرين</span><span className="sum-value g">{workers.filter(w=>!w.endDate).length}</span></div>
-            <div className="sum-row"><span className="sum-label">💰 إجمالي تكلفة العمالة</span><span className="sum-value r">{fmt(wCost)} جنيه</span></div>
-            <div className="sum-row"><span className="sum-label">💳 إجمالي المدفوع</span><span className="sum-value g">{fmt(wPaid)} جنيه</span></div>
-            <div className="sum-row"><span className="sum-label">📊 المتبقي</span><span className={`sum-value ${wCost-wPaid>0?"r":"g"}`}>{fmt(wCost-wPaid)} جنيه</span></div>
+            <div className="sum-row"><span className="sum-label">💰 إجمالي تكلفة العمالة</span><span className="sum-value r">{fmt(stats.wCost)} جنيه</span></div>
+            <div className="sum-row"><span className="sum-label">💳 إجمالي المدفوع</span><span className="sum-value g">{fmt(stats.wPaid)} جنيه</span></div>
+            <div className="sum-row"><span className="sum-label">📊 المتبقي</span><span className={`sum-value ${stats.wCost-stats.wPaid>0?"r":"g"}`}>{fmt(stats.wCost-stats.wPaid)} جنيه</span></div>
           </div>
           {workers.map(w=>{const d=daysBetween(w.startDate,w.endDate||null),tot=d*(Number(w.dailyRate)||0),paid=Number(w.paid)||0;return(<div key={w.id} className="list-item" style={{margin:"0 0 8px"}}><div className="li-icon" style={{background:"#e3f2fd"}}>👷</div><div className="li-body"><div className="li-title">{w.name}</div><div className="li-sub">{w.startDate} → {w.endDate||"حاضر"} · أيام: {d}</div></div><div className="li-right"><div className="li-amount">{fmt(tot)}</div><div className="li-date">متبقي: {fmt(tot-paid)}</div></div></div>);})}
         </div>
@@ -941,7 +1198,7 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
           <div className="section-title">تقرير المخزن</div>
           <div className="summary-card">
             <div className="sum-row"><span className="sum-label">📦 عدد الأصناف</span><span className="sum-value b">{inventory.length}</span></div>
-            <div className="sum-row"><span className="sum-label">💰 القيمة الإجمالية</span><span className="sum-value g">{fmt(invValue)} جنيه</span></div>
+            <div className="sum-row"><span className="sum-label">💰 القيمة الإجمالية</span><span className="sum-value g">{fmt(stats.invValue)} جنيه</span></div>
             <div className="sum-row"><span className="sum-label">⚠️ الكميات المنخفضة</span><span className="sum-value r">{inventory.filter(i=>Number(i.minStock)>0&&Number(i.quantity)<=Number(i.minStock)).length}</span></div>
           </div>
           {inventory.map(i=>{const low=Number(i.minStock)>0&&Number(i.quantity)<=Number(i.minStock);return(<div key={i.id} className="inv-item"><div className="inv-top"><div><div className="inv-name">{INV_ICONS[i.type]||"📦"} {i.name}</div><div className="inv-pkg">{i.type}</div></div><div className={`inv-row-v ${low?"warn":"ok"}`}>{fmt(i.quantity)} {i.unit}</div></div><div className="inv-rows"><div className="inv-row"><div className="inv-row-l">الحد الأدنى</div><div className="inv-row-v">{fmt(i.minStock)||"—"}</div></div><div className="inv-row"><div className="inv-row-l">القيمة</div><div className="inv-row-v">{fmt(Number(i.quantity)*Number(i.price))} جنيه</div></div></div></div>);})}
@@ -966,27 +1223,67 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
   const [showForm,setShowForm]=useState(false);
   const [edit,setEdit]=useState(null);
   const [f,setF]=useState({});
+  const [isSubmitting,setIsSubmitting]=useState(false);
+
   const s=(k,v)=>setF(x=>{const nf={...x,[k]:v};if(k==="role"&&v!=="admin"){nf.permissions=defPerms();}return nf;});
 
-  const save=()=>{
-    const item={...f,id:edit?edit.id:genUUID(),status:edit?edit.status:"active",createdBy:edit?edit.createdBy:currentUser.id};
-    if(edit){audit("edit","مستخدم",edit,item);setUsers(u=>u.map(x=>x.id===edit.id?item:x));}
-    else{audit("add","مستخدم",null,item);setUsers(u=>[...u,item]);}
-    // Sync to Supabase
-    supabase.from("users").upsert(item,{onConflict:"id"}).then(({error})=>{if(error) console.error("sync user:",error.message);});
-    setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
+  const save=async()=>{
+    if(isSubmitting) return;
+    if(!f.name || !f.username){showToast("يرجى ملء الحقول المطلوبة");return;}
+
+    setIsSubmitting(true);
+    try {
+      // Hash password if provided or changed
+      let passwordHash = f.password ? await hashPassword(f.password) : edit?.password;
+      if (!passwordHash && !edit) {
+        showToast("يرجى إدخال كلمة مرور");
+        setIsSubmitting(false);
+        return;
+      }
+
+      const item={
+        ...f,
+        id:edit?edit.id:genUUID(),
+        status:edit?edit.status:"active",
+        createdBy:edit?edit.createdBy:currentUser.id,
+        password: passwordHash,
+        farmId: edit ? edit.farmId : currentUser.farmId || currentUser.id, // Inherit farmId from admin
+      };
+
+      if(edit){audit("edit","مستخدم",edit,item);setUsers(u=>u.map(x=>x.id===edit.id?item:x));}
+      else{audit("add","مستخدم",null,item);setUsers(u=>[...u,item]);}
+
+      // Sync to Supabase
+      const { error } = await supabase.from("users").upsert(item, {onConflict:"id"});
+      if(error) console.error("sync user:", error.message);
+
+      setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
+    } catch(e) {
+      showToast("حدث خطأ أثناء الحفظ");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
-  const del=id=>{const u=users.find(x=>x.id===id);if(u){audit("delete","مستخدم",u,null);setUsers(us=>us.filter(x=>x.id!==id));showToast("تم الحذف");}};
-  const toggleStatus=id=>{setUsers(u=>u.map(x=>x.id===id?{...x,status:x.status==="active"?"suspended":"active"}:x));showToast("تم تغيير الحالة");};
-  const togglePerm=(id,pk,field)=>{
-    setUsers(u=>u.map(x=>{
-      if(x.id!==id) return x;
-      const p={...x.permissions};
+
+  const del=id=>{
+    const u=users.find(x=>x.id===id);
+    if(u){audit("delete","مستخدم",u,null);setUsers(us=>us.filter(x=>x.id!==id));showToast("تم الحذف");}
+  };
+
+  const toggleStatus=id=>{
+    setUsers(u=>u.map(x=>x.id===id?{...x,status:x.status==="active"?"suspended":"active"}:x));
+    showToast("تم تغيير الحالة");
+  };
+
+  // FIX #8: Proper permission toggle with stable ID
+  const togglePerm=(pk,field)=>{
+    setF(x=>{
+      const p={...(x.permissions||defPerms())};
       const arr=[...(p[field]||[])];
       if(arr.includes(pk)) p[field]=arr.filter(a=>a!==pk);
       else p[field]=[...arr,pk];
       return {...x,permissions:p};
-    }));
+    });
   };
 
   return(
@@ -1018,12 +1315,12 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
             <div className="modal-handle"/>
             <div className="modal-title">{edit?"تعديل مستخدم":"+ إضافة مستخدم"}</div>
             <div className="frow2">
-              <div><div className="flbl">الاسم</div><input className="finp" value={f.name||""} onChange={e=>s("name",e.target.value)}/></div>
+              <div><div className="flbl">الاسم *</div><input className="finp" value={f.name||""} onChange={e=>s("name",e.target.value)}/></div>
               <div><div className="flbl">الهاتف</div><input className="finp" value={f.phone||""} onChange={e=>s("phone",e.target.value)}/></div>
             </div>
             <div className="frow2">
-              <div><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)}/></div>
-              <div><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
+              <div><div className="flbl">اسم المستخدم *</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)}/></div>
+              <div><div className="flbl">كلمة المرور {edit?"(اتركها فارغة للإبقاء على القديمة)":"*"}</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
             </div>
             <div className="frow"><div className="flbl">الدور</div>
               <select className="finp" value={f.role||"manager"} onChange={e=>s("role",e.target.value)}>
@@ -1045,9 +1342,9 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
                     return(
                       <React.Fragment key={pk}>
                         <div style={{fontSize:12}}>{pk}</div>
-                        <button className="ptoggle" style={{background:(p.pages||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.pages||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(f.id||genUUID(),pk,"pages")}>{(p.pages||[]).includes(pk)?"✓":"✗"}</button>
-                        <button className="ptoggle" style={{background:(p.canEdit||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canEdit||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(f.id||genUUID(),pk,"canEdit")}>{(p.canEdit||[]).includes(pk)?"✓":"✗"}</button>
-                        <button className="ptoggle" style={{background:(p.canDelete||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canDelete||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(f.id||genUUID(),pk,"canDelete")}>{(p.canDelete||[]).includes(pk)?"✓":"✗"}</button>
+                        <button className="ptoggle" style={{background:(p.pages||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.pages||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"pages")}>{(p.pages||[]).includes(pk)?"✓":"✗"}</button>
+                        <button className="ptoggle" style={{background:(p.canEdit||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canEdit||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canEdit")}>{(p.canEdit||[]).includes(pk)?"✓":"✗"}</button>
+                        <button className="ptoggle" style={{background:(p.canDelete||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canDelete||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canDelete")}>{(p.canDelete||[]).includes(pk)?"✓":"✗"}</button>
                       </React.Fragment>
                     );
                   })}
@@ -1055,7 +1352,9 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
               </div>
             )}
             <div style={{height:10}}/>
-            <button className="save-btn" onClick={save}>حفظ</button>
+            <button className="save-btn" onClick={save} disabled={isSubmitting}>
+              {isSubmitting ? "جاري الحفظ..." : "حفظ"}
+            </button>
           </div>
         </div>
       )}
