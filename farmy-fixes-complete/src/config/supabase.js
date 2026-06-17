@@ -13,11 +13,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 export async function testConnection() {
   try {
-    const { data, error } = await supabase
-      .from('farms')
-      .select('id')
-      .limit(1);
-
+    const { error } = await supabase.from('expenses').select('id').limit(1);
     if (error) {
       console.error("Connection failed:", error.message);
       return false;
@@ -30,56 +26,27 @@ export async function testConnection() {
   }
 }
 
-export async function getProduction() {
-  const { data, error } = await supabase
-    .from('production')
-    .select('*')
-    .order('date', { ascending: false });
-  if (error) throw error;
-  return data;
-}
-
-export async function addProduction(item) {
-  const { data, error } = await supabase
-    .from('production')
-    .insert(item)
-    .select();
-  if (error) throw error;
-  return data;
-}
-
 export async function getExpenses() {
   const { data, error } = await supabase
-    .from('expenses')
-    .select('*')
-    .order('date', { ascending: false });
+    .from('expenses').select('*').order('date', { ascending: false });
   if (error) throw error;
   return data;
 }
 
 export async function addExpense(item) {
-  const { data, error } = await supabase
-    .from('expenses')
-    .insert(item)
-    .select();
+  const { data, error } = await supabase.from('expenses').insert(item).select();
   if (error) throw error;
   return data;
 }
 
 export async function getInventory() {
-  const { data, error } = await supabase
-    .from('inventory')
-    .select('*')
-    .order('item_name');
+  const { data, error } = await supabase.from('inventory').select('*').order('item_name');
   if (error) throw error;
   return data;
 }
 
 export async function getWorkers() {
-  const { data, error } = await supabase
-    .from('workers')
-    .select('*')
-    .order('name');
+  const { data, error } = await supabase.from('workers').select('*').order('name');
   if (error) throw error;
   return data;
 }
@@ -105,5 +72,3 @@ export async function getCurrentUser() {
   const { data: { user } } = await supabase.auth.getUser();
   return user;
 }
-
-export const from = (table) => supabase.from(table);
