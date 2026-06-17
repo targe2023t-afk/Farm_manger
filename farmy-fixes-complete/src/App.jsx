@@ -3,12 +3,20 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { supabase } from "./config/supabase";
 import "./App.css";
 
+// ═══════════════════════════════════════════════════════════════════════
+// ⚠️  IMPORTANT: DATABASE COLUMN NAMES USE SNAKE_CASE (farm_id)
+// ⚠️  JavaScript variables use camelCase (farmId)
+// ⚠️  Supabase/PostgreSQL requires: farm_id (with underscore)
+// ⚠️  If you see "farmId column not found" error, you are running OLD code!
+// ⚠️  Rebuild and clear ALL caches after updating this file!
+// ═══════════════════════════════════════════════════════════════════════
+
 // ─── CONSTANTS ───────────────────────────────────────────
 const EXP_TYPES    = ["فاتورة","كهرباء","وقود","صيانة","عمالة","سماد","مبيدات","ري","إيجار","أخرى"];
 const REV_TYPES    = ["قمح","ذرة","طماطم","بطاطس","بصل","فلفل ألوان","خضروات","فاكهة","أخرى"];
 const INV_TYPES    = ["سماد","مبيد","بذور","محروقات","أدوات","أخرى"];
 const EXPENSE_ICONS= {"فاتورة":"🧾","كهرباء":"⚡","وقود":"⛽","صيانة":"🔧","عمالة":"👷","سماد":"🌱","مبيدات":"🧴","ري":"💧","إيجار":"🏠","أخرى":"📦"};
-const REV_ICONS    = {"قمح":"🌾","ذرة":"🌽","طماطم":"🍅","بطاطس":"🥔","بصل":"🧅","فلفل":"🌶️","خضروات":"🥦","فاكهة":"🍎","أخرى":"📦"};
+const REV_ICONS    = {"قمح":"🌾","ذرة":"🌽","طماطم":"🍅","بطاطس":"🥔","بصل":"🧅","فلفل ألوان":"🌶️","خضروات":"🥦","فاكهة":"🍎","أخرى":"📦"};
 const INV_ICONS    = {"سماد":"🌱","مبيد":"🧴","بذور":"🌰","محروقات":"⛽","أدوات":"🔧","أخرى":"📦"};
 const PAGE_KEYS    = ["dashboard","expenses","revenue","inventory","workers","reports"];
 
@@ -78,7 +86,7 @@ function createAuditEntry(user, action, entity, oldVal, newVal) {
     oldVal: oldVal ? JSON.stringify(oldVal).slice(0, 500) : null,
     newVal: newVal ? JSON.stringify(newVal).slice(0, 500) : null,
     time: new Date().toLocaleString("ar-EG"),
-    farmId: user?.farmId || user?.id || "unknown",
+    farm_id: String(user?.farm_id || user?.id || "unknown"),
   };
 }
 
@@ -102,7 +110,7 @@ export default function App() {
       name: "المدير العام",
       phone: "",
       status: "active",
-      farmId: "farm-admin-001",
+      farm_id: "farm-admin-001",
     },
   ]));
 
@@ -144,7 +152,8 @@ export default function App() {
   // FIX #3: Correct farmId resolution
   const farmId = useMemo(() => {
     if (!user) return null;
-    return user.farmId || user.id || "unknown";
+    // Ensure farm_id is TEXT for Supabase comparison
+    return String(user.farm_id || user.id || "unknown");
   }, [user]);
 
   // FIX #4: addWithFarm with proper validation
@@ -152,8 +161,8 @@ export default function App() {
     setter(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       return next.map(r => {
-        const hasValidFarmId = r.farmId && r.farmId !== "unknown" && r.farmId !== "" && r.farmId !== null && r.farmId !== undefined;
-        return hasValidFarmId ? r : { ...r, farmId };
+        const hasValidFarmId = r.farm_id && r.farm_id !== "unknown" && r.farm_id !== "" && r.farm_id !== null && r.farm_id !== undefined;
+        return hasValidFarmId ? r : { ...r, farm_id: String(farmId) };
       });
     });
   }, [farmId]);
@@ -167,7 +176,7 @@ export default function App() {
   // ─── SYNC ──────────────────────────────────────────────
   const autoSync = useCallback(async (table, rows) => {
     if (!rows || rows.length === 0) return;
-    const rowsToSync = rows.filter(r => r.farmId === farmId);
+    const rowsToSync = rows.filter(r => String(r.farm_id) === String(farmId));
     if (rowsToSync.length === 0) return;
 
     setSyncStatus("syncing");
@@ -185,7 +194,7 @@ export default function App() {
 
   const debouncedSync = useCallback((table, rows) => {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    const rowsWithFarm = rows.map(r => r.farmId ? r : { ...r, farmId });
+    const rowsWithFarm = rows.map(r => r.farm_id ? r : { ...r, farm_id: String(farmId) });
     syncTimerRef.current = setTimeout(() => autoSync(table, rowsWithFarm), 2000);
   }, [autoSync, farmId]);
 
@@ -204,7 +213,7 @@ export default function App() {
         ["inventory", inventory], ["workers", workers], ["usage_log", usageLog],
       ];
       for (const [table, rows] of tables) {
-        const rowsToSync = rows.filter(r => r.farmId === farmId);
+        const rowsToSync = rows.filter(r => String(r.farm_id) === String(farmId));
         if (rowsToSync?.length) {
           const { error } = await supabase.from(table).upsert(rowsToSync, { onConflict: "id", ignoreDuplicates: false });
           if (error) throw new Error(`${table}: ${error.message}`);
@@ -219,7 +228,7 @@ export default function App() {
     setTimeout(() => setSyncStatus("local"), 3000);
   }, [expenses, revenues, inventory, workers, usageLog, showToast, farmId]);
 
-  // FIX #6: LOAD FROM SERVER with farmId filter
+  // FIX #6: LOAD FROM SERVER with farm_id filter (snake_case for Supabase DB)
   useEffect(() => {
     setSyncStatus("syncing");
     setIsLoading(true);
@@ -242,10 +251,10 @@ export default function App() {
         }
 
         // Only load data for current farm if user is logged in
-        if (user?.farmId || user?.id) {
-          const currentFarmId = user.farmId || user.id;
+        if (user?.farm_id || user?.id) {
+          const currentFarmId = String(user.farm_id || user.id);
           const fetchTable = async (t) => {
-            const { data, error } = await supabase.from(t).select("*").eq("farmId", currentFarmId);
+            const { data, error } = await supabase.from(t).select("*").eq("farm_id", currentFarmId);
             if (error) throw new Error(`${t}: ${error.message}`);
             return data || [];
           };
@@ -274,12 +283,12 @@ export default function App() {
     load();
   }, []); // Only run once on mount
 
-  // ─── FILTER DATA BY CURRENT USER'S farmId ────────────
-  const myExpenses  = useMemo(() => user ? expenses.filter(r => r.farmId === farmId) : [], [user, expenses, farmId]);
-  const myRevenues  = useMemo(() => user ? revenues.filter(r => r.farmId === farmId) : [], [user, revenues, farmId]);
-  const myInventory = useMemo(() => user ? inventory.filter(r => r.farmId === farmId) : [], [user, inventory, farmId]);
-  const myWorkers   = useMemo(() => user ? workers.filter(r => r.farmId === farmId) : [], [user, workers, farmId]);
-  const myUsageLog  = useMemo(() => user ? usageLog.filter(r => r.farmId === farmId) : [], [user, usageLog, farmId]);
+  // ─── FILTER DATA BY CURRENT USER'S farm_id ────────────
+  const myExpenses  = useMemo(() => user ? expenses.filter(r => String(r.farm_id) === String(farmId)) : [], [user, expenses, farmId]);
+  const myRevenues  = useMemo(() => user ? revenues.filter(r => String(r.farm_id) === String(farmId)) : [], [user, revenues, farmId]);
+  const myInventory = useMemo(() => user ? inventory.filter(r => String(r.farm_id) === String(farmId)) : [], [user, inventory, farmId]);
+  const myWorkers   = useMemo(() => user ? workers.filter(r => String(r.farm_id) === String(farmId)) : [], [user, workers, farmId]);
+  const myUsageLog  = useMemo(() => user ? usageLog.filter(r => String(r.farm_id) === String(farmId)) : [], [user, usageLog, farmId]);
 
   const lowStock = useMemo(() => myInventory.filter(i => Number(i.minStock) > 0 && Number(i.quantity) <= Number(i.minStock)), [myInventory]);
   const perms    = user?.role === "admin" ? defPerms() : (user?.permissions || defPerms());
@@ -451,7 +460,7 @@ function LoginPage({ users, setUsers, onLogin }) {
         farmName: f.farmName || "",
         role: "admin",
         status: "active",
-        farmId: newFarmId,        // FIX: each new user gets unique farm
+        farm_id: String(newFarmId),        // FIX: each new user gets unique farm
         permissions: defPerms(),
       };
       setUsers(u => [...u, newUser]);
@@ -1243,7 +1252,7 @@ function UsrPage({ users, setUsers, currentUser, showToast, audit }) {
         status: edit ? edit.status : "active",
         createdBy: edit ? edit.createdBy : currentUser.id,
         password: passwordHash,
-        farmId: edit ? edit.farmId : currentUser.farmId || currentUser.id,
+        farm_id: String(edit ? edit.farm_id : currentUser.farm_id || currentUser.id),
       };
 
       if (edit) { audit("edit", "مستخدم", edit, item); setUsers(u => u.map(x => x.id === edit.id ? item : x)); }
