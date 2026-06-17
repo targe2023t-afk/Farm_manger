@@ -170,6 +170,10 @@ export default function App() {
         setTimeout(()=>setSyncStatus("local"),2000);
       } catch(e){
         console.error("Load from server error:", e.message);
+        } catch(e){
+  console.error("Load from server error:", e.message);
+  showToast("خطأ: " + e.message);  // ← أضف السطر ده
+  setSyncStatus("error");
         setSyncStatus("error");
         setTimeout(()=>setSyncStatus("local"),4000);
       } finally {
