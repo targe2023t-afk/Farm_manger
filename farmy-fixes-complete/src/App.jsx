@@ -141,7 +141,7 @@ export default function App() {
       showToast("✅ تم المزامنة مع السيرفر");
     } catch(e) {
       setSyncStatus("error");
-      showToast("⚠️ فشل الاتصال بالسيرفر");
+      showToast("⚠️ فشل: " + e.message);
       console.error("syncToServer error:", e.message);
     }
     setTimeout(() => setSyncStatus("local"), 3000);
@@ -170,10 +170,7 @@ export default function App() {
         setTimeout(()=>setSyncStatus("local"),2000);
       } catch(e){
         console.error("Load from server error:", e.message);
-        } catch(e){
-  console.error("Load from server error:", e.message);
-  showToast("خطأ: " + e.message);  // ← أضف السطر ده
-  setSyncStatus("error");
+        showToast("خطأ: " + e.message);
         setSyncStatus("error");
         setTimeout(()=>setSyncStatus("local"),4000);
       } finally {
