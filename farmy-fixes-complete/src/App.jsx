@@ -15,6 +15,8 @@
 //   #13 — BarcodeDetector: fallback شامل مع رسالة واضحة لـ iOS/Firefox
 //   #14 — حذف بتأكيد (Confirm Dialog)
 //   #15 — صفحة المستخدمين تعرض مستخدمي المزرعة الحالية فقط
+//   #16 — تسجيل الخروج يصفّر كل بيانات المزرعة من الـ state
+//   #17 — autoSync و syncToServer يرفعوا بيانات المزرعة الحالية فقط
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./config/supabase";
@@ -159,11 +161,18 @@ export default function App() {
 
   const farmId = user?.farmId || user?.id || "unknown";
 
+  // FIX #17: نحتفظ بآخر قيمة لـ farmId في ref حتى تستخدمها autoSync دائماً
+  // بأحدث قيمة دون الحاجة لإعادة بناء الدالة (تجنّب stale closure هنا أيضاً)
+  const farmIdRef = useRef(farmId);
+  useEffect(() => { farmIdRef.current = farmId; }, [farmId]);
+
   // ─── Sync إلى Supabase ─────────────────────────────
   const autoSync = useCallback(async (table) => {
     // FIX #4: نقرأ الصفوف من ref لضمان أحدث نسخة
-    const rows = latestRows.current[table === "usage_log" ? "usageLog" : table];
-    if (!rows?.length) return;
+    const key  = table === "usage_log" ? "usageLog" : table;
+    // FIX #17: نرفع فقط صفوف المزرعة الحالية — لا نرفع الـ state الكامل
+    const rows = (latestRows.current[key] || []).filter(r => r.farmId === farmIdRef.current);
+    if (!rows.length) return;
     setSyncStatus("syncing");
     try {
       const { error } = await supabase.from(table).upsert(rows, { onConflict: "id", ignoreDuplicates: false });
@@ -192,12 +201,13 @@ export default function App() {
   const syncToServer = useCallback(async () => {
     setSyncStatus("syncing");
     try {
+      // FIX #17: نرفع فقط صفوف المزرعة الحالية في كل جدول
       const tables = [
-        ["expenses",  expenses],
-        ["revenues",  revenues],
-        ["inventory", inventory],
-        ["workers",   workers],
-        ["usage_log", usageLog],
+        ["expenses",  expenses.filter(r => r.farmId === farmId)],
+        ["revenues",  revenues.filter(r => r.farmId === farmId)],
+        ["inventory", inventory.filter(r => r.farmId === farmId)],
+        ["workers",   workers.filter(r => r.farmId === farmId)],
+        ["usage_log", usageLog.filter(r => r.farmId === farmId)],
       ];
       for (const [table, rows] of tables) {
         if (rows?.length) {
@@ -212,7 +222,7 @@ export default function App() {
       showToast("⚠️ فشل: " + e.message);
     }
     setTimeout(() => setSyncStatus("local"), 3000);
-  }, [expenses, revenues, inventory, workers, usageLog, showToast]);
+  }, [expenses, revenues, inventory, workers, usageLog, farmId, showToast]);
 
   // ─── تحميل البيانات من السيرفر ─────────────────────
   useEffect(() => {
@@ -315,6 +325,24 @@ export default function App() {
   const canE     = pg => user?.role === "admin" || (perms.canEdit   || []).includes(pg);
   const canD     = pg => user?.role === "admin" || (perms.canDelete || []).includes(pg);
   const pPages   = user?.role === "admin" ? [...PAGE_KEYS, "users"] : (perms.pages || PAGE_KEYS);
+
+  // FIX #16: تسجيل الخروج يصفّر بيانات المزرعة الحالية من الـ state
+  // (بدون هذا، بيانات المزرعة السابقة تبقى في الذاكرة وتُرفع تلقائياً
+  // عبر autoSync لو سجّل مستخدم آخر دخوله على نفس الجهاز)
+  const doLogout = () => {
+    setExpenses([]);
+    setRevenues([]);
+    setInventory([]);
+    setWorkers([]);
+    setUsageLog([]);
+    setAuditLog([]);
+    setTrE([]);
+    setTrR([]);
+    setTrI([]);
+    setTrW([]);
+    setUser(null);
+    setSidebarOpen(false);
+  };
 
   if (!user) return (
     <LoginPage
@@ -482,7 +510,8 @@ export default function App() {
               </button>
             </div>
             <div className="sb-footer">
-              <button className="sb-logout" onClick={() => { setUser(null); setSidebarOpen(false); }}>
+              {/* FIX #16: نستخدم doLogout بدل setUser(null) المباشر */}
+              <button className="sb-logout" onClick={doLogout}>
                 <div className="sb-item-ic" style={{ background: "#ffebee" }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="2" style={{width:20,height:20}}><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
                 </div>
