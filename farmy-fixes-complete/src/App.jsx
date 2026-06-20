@@ -1,4 +1,4 @@
-// v6.3 — Farmy App — Fixed: perms, farmId isolation, sync timers, report filters
+// v6.3 — Farmy App — Multi-farm isolation (managers isolated + their sub-users)
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./config/supabase";
 import "./App.css";
@@ -24,7 +24,6 @@ function todayAr(){
 function fmt(n){ return Number(n||0).toLocaleString("ar-EG"); }
 function daysBetween(a,b){ if(!a) return 0; return Math.max(0,Math.floor((new Date(b||new Date())-new Date(a))/86400000)+1); }
 function defPerms(){ return {pages:[...PAGE_KEYS],canEdit:[...PAGE_KEYS],canDelete:[...PAGE_KEYS]}; }
-// ✅ FIX(9): صلاحيات فارغة للمستخدم الفرعي الجديد (بدل ما ياخد كله افتراضياً)
 function emptyPerms(){ return {pages:["dashboard"],canEdit:[],canDelete:[]}; }
 
 const Nav = {
@@ -89,11 +88,10 @@ export default function App() {
     setAuditLog(l=>[createAuditEntry(user,action,entity,oldV,newV),...l].slice(0,500));
   },[user]);
 
-  // ✅ FIX(4): مؤقّت منفصل لكل جدول بدل مؤقّت واحد مشترك
   const syncTimers     = useRef({});
   const isFirstRender  = useRef(true);
 
-  // ✅ FIX(3): farmId موحّد — المدير = farmId الخاص به، الفرعي يرث farmId مديره
+  // farmId موحّد — المدير = farmId الخاص به، التابع يرث farmId مديره
   const farmId = user?.farmId || user?.id || "unknown";
 
   const autoSync = useCallback(async (table, rows) => {
@@ -172,7 +170,6 @@ export default function App() {
           fetchTable("expenses"), fetchTable("revenues"), fetchTable("inventory"),
           fetchTable("workers"),  fetchTable("usage_log"),
         ]);
-        // ✅ FIX(6): دمج بدل الكتابة فوق — لحماية البيانات المحلية غير المتزامنة
         const mergeById=(local,server)=>{
           const map=new Map(local.map(r=>[r.id,r]));
           server.forEach(r=>{ if(!map.has(r.id)) map.set(r.id,r); });
@@ -216,17 +213,20 @@ export default function App() {
   const setMyUsageLog  = addWithFarm(setUsageLog);
 
   const lowStock = myInventory.filter(i=>Number(i.minStock)>0&&Number(i.quantity)<=Number(i.minStock));
-  const perms    = user?.role==="admin"?defPerms():(user?.permissions||emptyPerms()); // ✅ FIX(2)
-  const canE     = pg=>user?.role==="admin"||(perms.canEdit||[]).includes(pg);
-  const canD     = pg=>user?.role==="admin"||(perms.canDelete||[]).includes(pg);
-  const pPages   = user?.role==="admin"?[...PAGE_KEYS,"users"]:(perms.pages||["dashboard"]);
+  // admin أو manager (مدير مزرعة) ياخد كل الصلاحيات على بياناته
+  const isOwner  = user?.role==="admin"||user?.role==="manager";
+  const perms    = isOwner?defPerms():(user?.permissions||emptyPerms());
+  const canE     = pg=>isOwner||(perms.canEdit||[]).includes(pg);
+  const canD     = pg=>isOwner||(perms.canDelete||[]).includes(pg);
+  const pPages   = isOwner?[...PAGE_KEYS,"users"]:(perms.pages||["dashboard"]);
 
   const [sidebarOpen,setSidebarOpen] = useState(false);
 
   if(!user) return (
     <LoginPage users={users} setUsers={setUsers} onLogin={u=>{
       setUser(u);
-      const allowed = u.role==="admin"?[...PAGE_KEYS,"users"]:(u.permissions?.pages||["dashboard"]);
+      const owner = u.role==="admin"||u.role==="manager";
+      const allowed = owner?[...PAGE_KEYS,"users"]:(u.permissions?.pages||["dashboard"]);
       setPage(allowed[0]||"dashboard");
     }}/>
   );
@@ -239,10 +239,10 @@ export default function App() {
     {k:"workers",  ic:Nav.wrk, l:"العمالة"},
     {k:"reports",  ic:Nav.rep, l:"التقارير"},
   ].filter(n=>pPages.includes(n.k));
-  if(user?.role==="admin") NAV.push({k:"users",ic:<svg viewBox="0 0 24 24" fill="currentColor" style={{width:22,height:22}}><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>,l:"المستخدمون"});
+  if(isOwner) NAV.push({k:"users",ic:<svg viewBox="0 0 24 24" fill="currentColor" style={{width:22,height:22}}><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>,l:"المستخدمون"});
 
   const pageTitle = NAV.find(n=>n.k===page)?.l||page;
-  const roleLabel = user.role==="admin"?"مدير":user.role==="supervisor"?"مشرف":"مدير فرع";
+  const roleLabel = user.role==="admin"?"مدير عام":user.role==="manager"?"مدير مزرعة":user.role==="supervisor"?"مشرف":"مستخدم";
 
   const BOTTOM_NAV = [
     {k:"dashboard", ic:Nav.home, l:"الرئيسية"},
@@ -298,7 +298,7 @@ export default function App() {
         {page==="inventory" && <InvPage  data={myInventory} setData={setMyInventory} trash={trI} setTrash={setTrI} usageLog={myUsageLog} setUsageLog={setMyUsageLog} canEdit={canE("inventory")} canDel={canD("inventory")} showToast={showToast} lowStock={lowStock} audit={audit}/>}
         {page==="workers"   && <WrkPage  data={myWorkers}   setData={setMyWorkers}   trash={trW} setTrash={setTrW} canEdit={canE("workers")} canDel={canD("workers")} showToast={showToast} audit={audit}/>}
         {page==="reports"   && <RepPage  expenses={myExpenses} revenues={myRevenues} workers={myWorkers} inventory={myInventory} auditLog={auditLog} users={users}/>}
-        {page==="users"     && user.role==="admin" && <UsrPage users={users} setUsers={setUsers} currentUser={user} showToast={showToast} audit={audit}/>}
+        {page==="users"     && isOwner && <UsrPage users={users} setUsers={setUsers} currentUser={user} showToast={showToast} audit={audit}/>}
       </div>
 
       <nav className="bottom-nav">
@@ -377,16 +377,17 @@ function LoginPage({users,setUsers,onLogin}) {
     if(!f.username||!f.password||!f.fullName){setErr("يرجى ملء الحقول المطلوبة");return;}
     if(f.password!==f.confirmPassword){setErr("كلمة المرور غير متطابقة");return;}
     if(users.find(u=>u.username===f.username)){setErr("اسم المستخدم موجود بالفعل");return;}
+    const fid = genUUID();
     const newUser = {
-      id: genUUID(),
+      id: fid,
       username: f.username,
       password: f.password,
       name: f.fullName,
       phone: f.phone||"",
       farmName: f.farmName||"",
-      role: "admin",
+      role: "manager",          // كل تسجيل جديد = مدير مزرعة مستقلة
       status: "active",
-      farmId: genUUID(),
+      farmId: fid,              // farmId = id نفسه (مزرعة منفردة)
       permissions: defPerms(),
     };
     setUsers(u=>[...u, newUser]);
@@ -827,7 +828,6 @@ function WrkPage({data,setData,trash,setTrash,canEdit,canDel,showToast,audit}) {
   const checkout=w=>{audit("edit","خروج عامل",w,{...w,endDate:todayStr()});setData(d=>d.map(i=>i.id===w.id?{...i,endDate:todayStr()}:i));showToast("تم تسجيل الخروج ✓");};
   return(
     <div>
-      {/* ✅ FIX(7): var(--white) → var(--surface) */}
       <div style={{margin:"14px 14px 0",background:"var(--surface)",borderRadius:14,padding:16,boxShadow:"var(--shadow)"}}>
         <div style={{display:"flex",gap:14}}>
           <div style={{flex:1,textAlign:"center"}}><div style={{fontSize:11,color:"var(--text3)",marginBottom:4}}>إجمالي عدد العمال</div><div style={{fontSize:28,fontWeight:900,color:"var(--text)"}}>{active}</div></div>
@@ -902,7 +902,6 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
   const fExp=filtered(expenses,"date"),fRev=filtered(revenues,"date");
   const totRev=fRev.reduce((s,r)=>s+(Number(r.amount)||0),0);
   const totExp=fExp.reduce((s,e)=>s+(Number(e.amount)||0),0);
-  // ✅ FIX(5): تكلفة العمالة مفلترة بالفترة (حسب تاريخ بداية العامل)
   const fWorkers=workers.filter(w=>inPeriod(w.startDate));
   const wCost=fWorkers.reduce((s,w)=>s+daysBetween(w.startDate,w.endDate||null)*(Number(w.dailyRate)||0),0);
   const wPaid=fWorkers.reduce((s,w)=>s+(Number(w.paid)||0),0);
@@ -985,7 +984,6 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
           <div className="section-title">سجل التغييرات</div>
           {auditLog.length===0&&<div className="no-data">لا توجد بيانات</div>}
           {auditLog.slice(0,50).map(a=>{
-            {/* ✅ FIX(8): var(--orange) → var(--amber) */}
             const actionColor=a.action==="delete"?"var(--red)":a.action==="add"?"var(--green)":"var(--amber)";
             return(<div key={a.id} className="audit-item"><div className="audit-user">👤 {getUserName(a.userId)} · <span style={{color:actionColor}}>{a.action}</span></div><div className="audit-action">{a.entity}</div>{a.oldVal&&<div className="audit-change">قبل: {a.oldVal.slice(0,100)}</div>}{a.newVal&&<div className="audit-change">بعد: {a.newVal.slice(0,100)}</div>}<div className="audit-time">{a.time}</div></div>);
           })}
@@ -1000,15 +998,23 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
   const [showForm,setShowForm]=useState(false);
   const [edit,setEdit]=useState(null);
   const [f,setF]=useState({});
-  const s=(k,v)=>setF(x=>{const nf={...x,[k]:v};if(k==="role"&&v!=="admin"&&!nf.permissions){nf.permissions=emptyPerms();}return nf;});
+  const s=(k,v)=>setF(x=>{const nf={...x,[k]:v};if(k==="role"&&!nf.permissions){nf.permissions=emptyPerms();}return nf;});
 
-  // ✅ FIX(1): togglePerm تعدّل في الفورم (f) لا في users
+  // farmId الخاص بالمدير الحالي
+  const myFarmId = currentUser.farmId || currentUser.id;
+
+  // يعرض فقط: نفسه + التابعين لمزرعته
+  const myUsers = users.filter(u =>
+    u.id === currentUser.id ||
+    u.farmId === myFarmId ||
+    u.createdBy === currentUser.id
+  );
+
   const togglePerm=(pk,field)=>{
     setF(x=>{
       const p={...(x.permissions||emptyPerms())};
       const arr=[...(p[field]||[])];
       p[field]=arr.includes(pk)?arr.filter(a=>a!==pk):[...arr,pk];
-      // ضمان: لو منح تعديل/حذف لصفحة لازم يشوفها
       if((field==="canEdit"||field==="canDelete")&&!arr.includes(pk)&&!(p.pages||[]).includes(pk)){
         p.pages=[...(p.pages||[]),pk];
       }
@@ -1018,15 +1024,18 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
 
   const save=()=>{
     if(!f.name||!f.username){showToast("أدخل الاسم واسم المستخدم");return;}
-    // ✅ FIX(2,3): المستخدم الفرعي يرث farmId المدير + صلاحيات صريحة
+    const dupe = myUsers.find(u=>u.username===f.username && u.id!==(edit?.id));
+    if(dupe){showToast("اسم المستخدم مستخدم بالفعل");return;}
+    // التابع يرث farmId + farmName المدير، ولا يكون admin/manager أبداً
     const item={
       ...f,
       id:edit?edit.id:genUUID(),
       status:edit?edit.status:"active",
       createdBy:edit?edit.createdBy:currentUser.id,
-      farmId: edit?.farmId || currentUser.farmId || currentUser.id,
+      farmId: edit?.farmId || myFarmId,
       farmName: edit?.farmName || currentUser.farmName || "",
-      permissions: f.role==="admin"?defPerms():(f.permissions||emptyPerms()),
+      role: (edit&&edit.id===currentUser.id) ? currentUser.role : "supervisor",
+      permissions: (edit&&edit.id===currentUser.id) ? (edit.permissions||defPerms()) : (f.permissions||emptyPerms()),
     };
     if(edit){audit("edit","مستخدم",edit,item);setUsers(u=>u.map(x=>x.id===edit.id?item:x));}
     else{audit("add","مستخدم",null,item);setUsers(u=>[...u,item]);}
@@ -1040,21 +1049,22 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
     <div>
       <button className="add-btn-full" onClick={()=>{setF({role:"supervisor",permissions:emptyPerms()});setEdit(null);setShowForm(true);}}>+ إضافة مستخدم</button>
       <div className="section"><div className="section-title">المستخدمون</div></div>
-      {users.length===0&&<div className="no-data">لا توجد بيانات</div>}
-      {users.map(u=>{
-        const isAdmin=u.role==="admin",isSuspended=u.status==="suspended";
+      {myUsers.length===0&&<div className="no-data">لا توجد بيانات</div>}
+      {myUsers.map(u=>{
+        const isMe = u.id===currentUser.id;
+        const isSuspended=u.status==="suspended";
         return(
           <div key={u.id} className="usr-item">
             <div className="w-avatar">👤</div>
             <div style={{flex:1}}>
               <div className="w-name">{u.name} <span style={{fontSize:11,color:"var(--text3)",fontWeight:400}}>({u.username})</span></div>
-              <div className="w-daily">{u.role==="admin"?"مدير":u.role==="manager"?"مدير فرع":"مشرف"} · {u.phone||"—"}</div>
+              <div className="w-daily">{u.role==="admin"?"مدير عام":u.role==="manager"?"مدير المزرعة":"مشرف"} · {u.phone||"—"}</div>
               <div style={{fontSize:11,color:isSuspended?"var(--red)":"var(--green)",marginTop:2}}>{isSuspended?"🚫 موقوف":"✅ نشط"}</div>
             </div>
             <div style={{display:"flex",gap:4,alignItems:"center"}}>
-              {!isAdmin&&<button className="ibt" style={{background:isSuspended?"var(--green3)":"#ffebee",color:isSuspended?"var(--green)":"var(--red)"}} onClick={()=>toggleStatus(u.id)}>{isSuspended?"✅":"🚫"}</button>}
+              {!isMe&&<button className="ibt" style={{background:isSuspended?"var(--green3)":"#ffebee",color:isSuspended?"var(--green)":"var(--red)"}} onClick={()=>toggleStatus(u.id)}>{isSuspended?"✅":"🚫"}</button>}
               <button className="ibt ibt-g" onClick={()=>{setF({...u,password:""});setEdit(u);setShowForm(true);}}>✏️</button>
-              {!isAdmin&&<button className="ibt ibt-r" onClick={()=>del(u.id)}>🗑️</button>}
+              {!isMe&&<button className="ibt ibt-r" onClick={()=>del(u.id)}>🗑️</button>}
             </div>
           </div>
         );
@@ -1072,34 +1082,33 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
               <div><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)}/></div>
               <div><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
             </div>
-            <div className="frow"><div className="flbl">الدور</div>
-              <select className="finp" value={f.role||"supervisor"} onChange={e=>s("role",e.target.value)}>
-                <option value="manager">مدير فرع</option>
-                <option value="supervisor">مشرف</option>
-                <option value="admin">مدير</option>
-              </select>
-            </div>
-            {f.role!=="admin"&&(
-              <div style={{marginTop:10}}>
-                <div style={{fontSize:12,fontWeight:700,color:"var(--text2)",marginBottom:6}}>الصلاحيات</div>
-                <div className="perm-grid">
-                  <div style={{fontSize:11,color:"var(--text3)"}}>الصفحة</div>
-                  <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>عرض</div>
-                  <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>تعديل</div>
-                  <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>حذف</div>
-                  {PAGE_KEYS.map(pk=>{
-                    const p=f.permissions||emptyPerms();
-                    return(
-                      <React.Fragment key={pk}>
-                        <div style={{fontSize:12}}>{pk}</div>
-                        <button className="ptoggle" style={{background:(p.pages||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.pages||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"pages")}>{(p.pages||[]).includes(pk)?"✓":"✗"}</button>
-                        <button className="ptoggle" style={{background:(p.canEdit||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canEdit||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canEdit")}>{(p.canEdit||[]).includes(pk)?"✓":"✗"}</button>
-                        <button className="ptoggle" style={{background:(p.canDelete||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canDelete||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canDelete")}>{(p.canDelete||[]).includes(pk)?"✓":"✗"}</button>
-                      </React.Fragment>
-                    );
-                  })}
+            {/* لو بنعدّل المدير نفسه، نخفي الدور والصلاحيات */}
+            {!(edit&&edit.id===currentUser.id)&&(
+              <>
+                <div className="frow"><div className="flbl">الدور</div>
+                  <input className="finp ro" readOnly value="مشرف (تابع للمزرعة)"/>
                 </div>
-              </div>
+                <div style={{marginTop:10}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"var(--text2)",marginBottom:6}}>الصلاحيات</div>
+                  <div className="perm-grid">
+                    <div style={{fontSize:11,color:"var(--text3)"}}>الصفحة</div>
+                    <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>عرض</div>
+                    <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>تعديل</div>
+                    <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>حذف</div>
+                    {PAGE_KEYS.map(pk=>{
+                      const p=f.permissions||emptyPerms();
+                      return(
+                        <React.Fragment key={pk}>
+                          <div style={{fontSize:12}}>{pk}</div>
+                          <button className="ptoggle" style={{background:(p.pages||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.pages||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"pages")}>{(p.pages||[]).includes(pk)?"✓":"✗"}</button>
+                          <button className="ptoggle" style={{background:(p.canEdit||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canEdit||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canEdit")}>{(p.canEdit||[]).includes(pk)?"✓":"✗"}</button>
+                          <button className="ptoggle" style={{background:(p.canDelete||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canDelete||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canDelete")}>{(p.canDelete||[]).includes(pk)?"✓":"✗"}</button>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
             )}
             <div style={{height:10}}/>
             <button className="save-btn" onClick={save}>حفظ</button>
@@ -1120,7 +1129,6 @@ function RestoreModal({trash,onRestore,onClose}) {
         {trash.length===0&&<div className="no-data">لا يوجد محذوفات</div>}
         {trash.map((item,i)=>{
           const name=item.name||item.category||item.product||"عنصر";
-          // ✅ FIX(10): حماية من Invalid Date
           const delDate=item._d?new Date(item._d).toLocaleString("ar-EG"):"—";
           return(
             <div key={item._d||i} className="restore-row">
