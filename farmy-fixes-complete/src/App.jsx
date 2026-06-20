@@ -1,4 +1,4 @@
-// v6.3 — Farmy App — Multi-farm isolation (managers isolated + their sub-users)
+// v6.3 — Farmy App — Multi-farm isolation + server-aware login
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./config/supabase";
 import "./App.css";
@@ -54,6 +54,7 @@ export default function App() {
   const [page,setPage]             = useState("dashboard");
   const [toast,setToast]           = useState(null);
   const [syncStatus,setSyncStatus] = useState("local");
+  const [loading,setLoading]       = useState(true);
 
   const [users,setUsers] = useState(()=>ld("users",[
     {id:"00000000-0000-0000-0000-000000000001",username:"admin",password:"1234",role:"admin",name:"المدير العام",phone:"",status:"active",farmId:"farm-admin"},
@@ -91,7 +92,6 @@ export default function App() {
   const syncTimers     = useRef({});
   const isFirstRender  = useRef(true);
 
-  // farmId موحّد — المدير = farmId الخاص به، التابع يرث farmId مديره
   const farmId = user?.farmId || user?.id || "unknown";
 
   const autoSync = useCallback(async (table, rows) => {
@@ -188,6 +188,7 @@ export default function App() {
         setTimeout(()=>setSyncStatus("local"),4000);
       } finally {
         isFirstRender.current = false;
+        setLoading(false);
       }
     };
     load();
@@ -213,7 +214,6 @@ export default function App() {
   const setMyUsageLog  = addWithFarm(setUsageLog);
 
   const lowStock = myInventory.filter(i=>Number(i.minStock)>0&&Number(i.quantity)<=Number(i.minStock));
-  // admin أو manager (مدير مزرعة) ياخد كل الصلاحيات على بياناته
   const isOwner  = user?.role==="admin"||user?.role==="manager";
   const perms    = isOwner?defPerms():(user?.permissions||emptyPerms());
   const canE     = pg=>isOwner||(perms.canEdit||[]).includes(pg);
@@ -221,6 +221,17 @@ export default function App() {
   const pPages   = isOwner?[...PAGE_KEYS,"users"]:(perms.pages||["dashboard"]);
 
   const [sidebarOpen,setSidebarOpen] = useState(false);
+
+  // ── شاشة التحميل ──
+  if(loading && !user) return (
+    <div className="login-wrap" dir="rtl" style={{justifyContent:"center",fontFamily:"'Cairo',sans-serif"}}>
+      <div className="login-top">
+        <div className="login-logo">🌾</div>
+        <div className="login-title">farmy</div>
+        <div className="login-sub">جاري التحميل...</div>
+      </div>
+    </div>
+  );
 
   if(!user) return (
     <LoginPage users={users} setUsers={setUsers} onLogin={u=>{
@@ -366,36 +377,69 @@ function LoginPage({users,setUsers,onLogin}) {
   const [f,setF]=useState({});
   const [err,setErr]=useState("");
   const [ok,setOk]=useState("");
+  const [busy,setBusy]=useState(false);
   const s=(k,v)=>setF(x=>({...x,[k]:v}));
 
-  const doLogin=()=>{
-    const u=users.find(x=>x.username===f.username&&x.password===f.password&&x.status==="active");
-    if(u){setErr("");onLogin(u);}else setErr("خطأ في اسم المستخدم أو كلمة المرور");
+  const doLogin=async()=>{
+    setErr("");setBusy(true);
+    try{
+      let u=users.find(x=>x.username===f.username&&x.password===f.password&&x.status==="active");
+      if(!u){
+        const { data, error } = await supabase
+          .from("users").select("*")
+          .eq("username", f.username).eq("password", f.password).limit(1);
+        if(error) throw new Error(error.message);
+        if(data&&data.length){
+          u=data[0];
+          setUsers(prev=>{
+            const exists=prev.find(p=>p.id===u.id);
+            return exists?prev.map(p=>p.id===u.id?u:p):[...prev,u];
+          });
+        }
+      }
+      if(u&&u.status==="active"){ onLogin(u); }
+      else if(u&&u.status!=="active"){ setErr("هذا الحساب موقوف، تواصل مع المدير"); }
+      else { setErr("خطأ في اسم المستخدم أو كلمة المرور"); }
+    }catch(e){
+      setErr("تعذر الاتصال بالسيرفر: "+e.message);
+    }
+    setBusy(false);
   };
 
-  const doReg=()=>{
+  const doReg=async()=>{
+    setErr("");setOk("");
     if(!f.username||!f.password||!f.fullName){setErr("يرجى ملء الحقول المطلوبة");return;}
     if(f.password!==f.confirmPassword){setErr("كلمة المرور غير متطابقة");return;}
-    if(users.find(u=>u.username===f.username)){setErr("اسم المستخدم موجود بالفعل");return;}
-    const fid = genUUID();
-    const newUser = {
-      id: fid,
-      username: f.username,
-      password: f.password,
-      name: f.fullName,
-      phone: f.phone||"",
-      farmName: f.farmName||"",
-      role: "manager",          // كل تسجيل جديد = مدير مزرعة مستقلة
-      status: "active",
-      farmId: fid,              // farmId = id نفسه (مزرعة منفردة)
-      permissions: defPerms(),
-    };
-    setUsers(u=>[...u, newUser]);
-    supabase.from("users").upsert(newUser, {onConflict:"id"}).then(({error})=>{
-      if(error) console.error("sync new user:", error.message);
-    });
-    setOk("تم إنشاء الحساب بنجاح");setErr("");
-    setTimeout(()=>{setOk("");setTab("login");setF({username:f.username,password:f.password});},1400);
+    setBusy(true);
+    try{
+      const { data: existing, error: ce } = await supabase
+        .from("users").select("id").eq("username", f.username).limit(1);
+      if(ce) throw new Error(ce.message);
+      if((existing&&existing.length) || users.find(u=>u.username===f.username)){
+        setErr("اسم المستخدم موجود بالفعل");setBusy(false);return;
+      }
+      const fid = genUUID();
+      const newUser = {
+        id: fid,
+        username: f.username,
+        password: f.password,
+        name: f.fullName,
+        phone: f.phone||"",
+        farmName: f.farmName||"",
+        role: "manager",
+        status: "active",
+        farmId: fid,
+        permissions: defPerms(),
+      };
+      const { error: ue } = await supabase.from("users").upsert(newUser,{onConflict:"id"});
+      if(ue) throw new Error(ue.message);
+      setUsers(u=>[...u, newUser]);
+      setOk("تم إنشاء الحساب بنجاح ✓");
+      setTimeout(()=>{setOk("");setTab("login");setF({username:f.username,password:f.password});},1400);
+    }catch(e){
+      setErr("فشل إنشاء الحساب: "+e.message);
+    }
+    setBusy(false);
   };
 
   return (
@@ -414,9 +458,9 @@ function LoginPage({users,setUsers,onLogin}) {
         {ok&&<div className="ok-msg">{ok}</div>}
         {tab==="login"?(
           <>
-            <div className="frow"><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
-            <div className="frow"><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}/></div>
-            <button className="save-btn" onClick={doLogin}>تسجيل الدخول</button>
+            <div className="frow"><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)} onKeyDown={e=>e.key==="Enter"&&!busy&&doLogin()}/></div>
+            <div className="frow"><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)} onKeyDown={e=>e.key==="Enter"&&!busy&&doLogin()}/></div>
+            <button className="save-btn" onClick={doLogin} disabled={busy}>{busy?"جاري الدخول...":"تسجيل الدخول"}</button>
           </>
         ):(
           <>
@@ -430,7 +474,7 @@ function LoginPage({users,setUsers,onLogin}) {
               <div><div className="flbl">كلمة المرور *</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
             </div>
             <div className="frow"><div className="flbl">تأكيد كلمة المرور *</div><input className="finp" type="password" value={f.confirmPassword||""} onChange={e=>s("confirmPassword",e.target.value)}/></div>
-            <button className="save-btn" onClick={doReg}>إنشاء الحساب</button>
+            <button className="save-btn" onClick={doReg} disabled={busy}>{busy?"جاري الإنشاء...":"إنشاء الحساب"}</button>
           </>
         )}
       </div>
@@ -904,7 +948,6 @@ function RepPage({expenses,revenues,workers,inventory,auditLog,users}) {
   const totExp=fExp.reduce((s,e)=>s+(Number(e.amount)||0),0);
   const fWorkers=workers.filter(w=>inPeriod(w.startDate));
   const wCost=fWorkers.reduce((s,w)=>s+daysBetween(w.startDate,w.endDate||null)*(Number(w.dailyRate)||0),0);
-  const wPaid=fWorkers.reduce((s,w)=>s+(Number(w.paid)||0),0);
   const netProfit=totRev-totExp-wCost;
   const invValue=inventory.reduce((s,i)=>s+(Number(i.quantity)||0)*(Number(i.price)||0),0);
   const days5=[...Array(5)].map((_,i)=>{
@@ -1000,10 +1043,8 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
   const [f,setF]=useState({});
   const s=(k,v)=>setF(x=>{const nf={...x,[k]:v};if(k==="role"&&!nf.permissions){nf.permissions=emptyPerms();}return nf;});
 
-  // farmId الخاص بالمدير الحالي
   const myFarmId = currentUser.farmId || currentUser.id;
 
-  // يعرض فقط: نفسه + التابعين لمزرعته
   const myUsers = users.filter(u =>
     u.id === currentUser.id ||
     u.farmId === myFarmId ||
@@ -1022,11 +1063,10 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
     });
   };
 
-  const save=()=>{
+  const save=async()=>{
     if(!f.name||!f.username){showToast("أدخل الاسم واسم المستخدم");return;}
     const dupe = myUsers.find(u=>u.username===f.username && u.id!==(edit?.id));
     if(dupe){showToast("اسم المستخدم مستخدم بالفعل");return;}
-    // التابع يرث farmId + farmName المدير، ولا يكون admin/manager أبداً
     const item={
       ...f,
       id:edit?edit.id:genUUID(),
@@ -1037,13 +1077,23 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
       role: (edit&&edit.id===currentUser.id) ? currentUser.role : "supervisor",
       permissions: (edit&&edit.id===currentUser.id) ? (edit.permissions||defPerms()) : (f.permissions||emptyPerms()),
     };
-    if(edit){audit("edit","مستخدم",edit,item);setUsers(u=>u.map(x=>x.id===edit.id?item:x));}
-    else{audit("add","مستخدم",null,item);setUsers(u=>[...u,item]);}
-    supabase.from("users").upsert(item,{onConflict:"id"}).then(({error})=>{if(error) console.error("sync user:",error.message);});
-    setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
+    try{
+      const { error } = await supabase.from("users").upsert(item,{onConflict:"id"});
+      if(error) throw new Error(error.message);
+      if(edit){audit("edit","مستخدم",edit,item);setUsers(u=>u.map(x=>x.id===edit.id?item:x));}
+      else{audit("add","مستخدم",null,item);setUsers(u=>[...u,item]);}
+      setShowForm(false);setEdit(null);setF({});showToast("تم الحفظ ✓");
+    }catch(e){
+      showToast("فشل الحفظ: "+e.message);
+    }
   };
-  const del=id=>{const u=users.find(x=>x.id===id);if(u){audit("delete","مستخدم",u,null);setUsers(us=>us.filter(x=>x.id!==id));showToast("تم الحذف");}};
-  const toggleStatus=id=>{setUsers(u=>u.map(x=>x.id===id?{...x,status:x.status==="active"?"suspended":"active"}:x));showToast("تم تغيير الحالة");};
+  const del=id=>{const u=users.find(x=>x.id===id);if(u){audit("delete","مستخدم",u,null);setUsers(us=>us.filter(x=>x.id!==id));supabase.from("users").delete().eq("id",id).then(({error})=>{if(error)console.error(error.message);});showToast("تم الحذف");}};
+  const toggleStatus=id=>{
+    setUsers(u=>u.map(x=>x.id===id?{...x,status:x.status==="active"?"suspended":"active"}:x));
+    const target=users.find(x=>x.id===id);
+    if(target){const ns=target.status==="active"?"suspended":"active";supabase.from("users").update({status:ns}).eq("id",id).then(({error})=>{if(error)console.error(error.message);});}
+    showToast("تم تغيير الحالة");
+  };
 
   return(
     <div>
@@ -1082,7 +1132,6 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
               <div><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)}/></div>
               <div><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
             </div>
-            {/* لو بنعدّل المدير نفسه، نخفي الدور والصلاحيات */}
             {!(edit&&edit.id===currentUser.id)&&(
               <>
                 <div className="frow"><div className="flbl">الدور</div>
