@@ -1,4 +1,4 @@
-// v6.3 — Farmy App — Multi-farm isolation + server-aware login
+// v6.4 — Farmy App — Arabic permissions + dashboard fix
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./config/supabase";
 import "./App.css";
@@ -9,7 +9,19 @@ const INV_TYPES    = ["سماد","مبيد","بذور","محروقات","أدو�
 const EXPENSE_ICONS= {"فاتورة":"🧾","كهرباء":"⚡","وقود":"⛽","صيانة":"🔧","عمالة":"👷","سماد":"🌱","مبيدات":"🧴","ري":"💧","إيجار":"🏠","أخرى":"📦"};
 const REV_ICONS    = {"قمح":"🌾","ذرة":"🌽","طماطم":"🍅","بطاطس":"🥔","بصل":"🧅","فلفل ألوان":"🌶️","خضروات":"🥦","فاكهة":"🍎","أخرى":"📦"};
 const INV_ICONS    = {"سماد":"🌱","مبيد":"🧴","بذور":"🌰","محروقات":"⛽","أدوات":"🔧","أخرى":"📦"};
-const PAGE_KEYS    = ["dashboard","expenses","revenue","inventory","workers","reports"];
+
+// مفاتيح الصفحات (داخلية)
+const PAGE_KEYS = ["dashboard","expenses","revenue","inventory","workers","reports"];
+
+// أسماء الصفحات بالعربي
+const PAGE_LABELS = {
+  dashboard : "الرئيسية",
+  expenses  : "المصروفات",
+  revenue   : "الإيرادات",
+  inventory : "المخزن",
+  workers   : "العمالة",
+  reports   : "التقارير",
+};
 
 function genUUID() { return crypto.randomUUID(); }
 function ld(k,fb){ try{ const r=localStorage.getItem("fmv6_"+k); return r?JSON.parse(r):fb; }catch{ return fb; } }
@@ -24,7 +36,7 @@ function todayAr(){
 function fmt(n){ return Number(n||0).toLocaleString("ar-EG"); }
 function daysBetween(a,b){ if(!a) return 0; return Math.max(0,Math.floor((new Date(b||new Date())-new Date(a))/86400000)+1); }
 function defPerms(){ return {pages:[...PAGE_KEYS],canEdit:[...PAGE_KEYS],canDelete:[...PAGE_KEYS]}; }
-function emptyPerms(){ return {pages:["dashboard"],canEdit:[],canDelete:[]}; }
+function emptyPerms(){ return {pages:[],canEdit:[],canDelete:[]}; }
 
 const Nav = {
   home:<svg viewBox="0 0 24 24" fill="currentColor" style={{width:22,height:22}}><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>,
@@ -218,7 +230,8 @@ export default function App() {
   const perms    = isOwner?defPerms():(user?.permissions||emptyPerms());
   const canE     = pg=>isOwner||(perms.canEdit||[]).includes(pg);
   const canD     = pg=>isOwner||(perms.canDelete||[]).includes(pg);
-  const pPages   = isOwner?[...PAGE_KEYS,"users"]:(perms.pages||["dashboard"]);
+  // ✅ إصلاح: لا نضيف dashboard تلقائياً للمشرفين
+  const pPages   = isOwner?[...PAGE_KEYS,"users"]:(perms.pages||[]);
 
   const [sidebarOpen,setSidebarOpen] = useState(false);
 
@@ -237,7 +250,8 @@ export default function App() {
     <LoginPage users={users} setUsers={setUsers} onLogin={u=>{
       setUser(u);
       const owner = u.role==="admin"||u.role==="manager";
-      const allowed = owner?[...PAGE_KEYS,"users"]:(u.permissions?.pages||["dashboard"]);
+      // ✅ إصلاح: لا نفرض dashboard لو مش في الصلاحيات
+      const allowed = owner?[...PAGE_KEYS,"users"]:(u.permissions?.pages||[]);
       setPage(allowed[0]||"dashboard");
     }}/>
   );
@@ -294,7 +308,7 @@ export default function App() {
         </div>
       ) : (
         <div className="page-top">
-          <button className="back-btn" onClick={()=>setPage("dashboard")}>←</button>
+          <button className="back-btn" onClick={()=>setPage(pPages[0]||"dashboard")}>←</button>
           <div className="page-title">{pageTitle}</div>
           <button className="back-btn" onClick={()=>setSidebarOpen(true)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" style={{width:18,height:18}}><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -303,7 +317,7 @@ export default function App() {
       )}
 
       <div className="cnt">
-        {page==="dashboard" && <DashPage expenses={myExpenses} revenues={myRevenues} inventory={myInventory} workers={myWorkers} lowStock={lowStock} setPage={setPage}/>}
+        {page==="dashboard" && pPages.includes("dashboard") && <DashPage expenses={myExpenses} revenues={myRevenues} inventory={myInventory} workers={myWorkers} lowStock={lowStock} setPage={setPage}/>}
         {page==="expenses"  && <ExpPage  data={myExpenses}  setData={setMyExpenses}  trash={trE} setTrash={setTrE} canEdit={canE("expenses")} canDel={canD("expenses")} showToast={showToast} audit={audit}/>}
         {page==="revenue"   && <RevPage  data={myRevenues}  setData={setMyRevenues}  trash={trR} setTrash={setTrR} canEdit={canE("revenue")}  canDel={canD("revenue")}  showToast={showToast} audit={audit}/>}
         {page==="inventory" && <InvPage  data={myInventory} setData={setMyInventory} trash={trI} setTrash={setTrI} usageLog={myUsageLog} setUsageLog={setMyUsageLog} canEdit={canE("inventory")} canDel={canD("inventory")} showToast={showToast} lowStock={lowStock} audit={audit}/>}
@@ -360,7 +374,7 @@ export default function App() {
                 </div>
                 تسجيل الخروج
               </button>
-              <div className="sb-version">farmy v6.3</div>
+              <div className="sb-version">farmy v6.4</div>
             </div>
           </div>
         </>
@@ -1087,6 +1101,7 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
       showToast("فشل الحفظ: "+e.message);
     }
   };
+
   const del=id=>{const u=users.find(x=>x.id===id);if(u){audit("delete","مستخدم",u,null);setUsers(us=>us.filter(x=>x.id!==id));supabase.from("users").delete().eq("id",id).then(({error})=>{if(error)console.error(error.message);});showToast("تم الحذف");}};
   const toggleStatus=id=>{
     setUsers(u=>u.map(x=>x.id===id?{...x,status:x.status==="active"?"suspended":"active"}:x));
@@ -1094,6 +1109,13 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
     if(target){const ns=target.status==="active"?"suspended":"active";supabase.from("users").update({status:ns}).eq("id",id).then(({error})=>{if(error)console.error(error.message);});}
     showToast("تم تغيير الحالة");
   };
+
+  // ── جدول الصلاحيات: عناوين الأعمدة بالعربي ──
+  const PERM_COL_HEADERS = [
+    { field: "pages",     label: "عرض" },
+    { field: "canEdit",   label: "تعديل" },
+    { field: "canDelete", label: "حذف" },
+  ];
 
   return(
     <div>
@@ -1119,6 +1141,7 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
           </div>
         );
       })}
+
       {showForm&&(
         <div className="modal-ov" onClick={()=>setShowForm(false)}>
           <div className="modal-box" onClick={e=>e.stopPropagation()}>
@@ -1132,26 +1155,48 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
               <div><div className="flbl">اسم المستخدم</div><input className="finp" value={f.username||""} onChange={e=>s("username",e.target.value)}/></div>
               <div><div className="flbl">كلمة المرور</div><input className="finp" type="password" value={f.password||""} onChange={e=>s("password",e.target.value)}/></div>
             </div>
+
             {!(edit&&edit.id===currentUser.id)&&(
               <>
-                <div className="frow"><div className="flbl">الدور</div>
+                <div className="frow">
+                  <div className="flbl">الدور</div>
                   <input className="finp ro" readOnly value="مشرف (تابع للمزرعة)"/>
                 </div>
+
+                {/* ── جدول الصلاحيات بالعربي ── */}
                 <div style={{marginTop:10}}>
                   <div style={{fontSize:12,fontWeight:700,color:"var(--text2)",marginBottom:6}}>الصلاحيات</div>
                   <div className="perm-grid">
-                    <div style={{fontSize:11,color:"var(--text3)"}}>الصفحة</div>
-                    <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>عرض</div>
-                    <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>تعديل</div>
-                    <div style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>حذف</div>
+                    {/* رأس الجدول */}
+                    <div style={{fontSize:11,color:"var(--text3)",fontWeight:700}}>الصفحة</div>
+                    {PERM_COL_HEADERS.map(col=>(
+                      <div key={col.field} style={{fontSize:11,color:"var(--text3)",textAlign:"center",fontWeight:700}}>{col.label}</div>
+                    ))}
+
+                    {/* صفوف الصفحات */}
                     {PAGE_KEYS.map(pk=>{
-                      const p=f.permissions||emptyPerms();
+                      const p = f.permissions || emptyPerms();
                       return(
                         <React.Fragment key={pk}>
-                          <div style={{fontSize:12}}>{pk}</div>
-                          <button className="ptoggle" style={{background:(p.pages||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.pages||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"pages")}>{(p.pages||[]).includes(pk)?"✓":"✗"}</button>
-                          <button className="ptoggle" style={{background:(p.canEdit||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canEdit||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canEdit")}>{(p.canEdit||[]).includes(pk)?"✓":"✗"}</button>
-                          <button className="ptoggle" style={{background:(p.canDelete||[]).includes(pk)?"var(--green3)":"var(--bg)",color:(p.canDelete||[]).includes(pk)?"var(--green)":"var(--text3)"}} onClick={()=>togglePerm(pk,"canDelete")}>{(p.canDelete||[]).includes(pk)?"✓":"✗"}</button>
+                          {/* اسم الصفحة بالعربي */}
+                          <div style={{fontSize:12,color:"var(--text)",padding:"2px 0"}}>{PAGE_LABELS[pk]}</div>
+
+                          {PERM_COL_HEADERS.map(col=>{
+                            const active = (p[col.field]||[]).includes(pk);
+                            return(
+                              <button
+                                key={col.field}
+                                className="ptoggle"
+                                style={{
+                                  background: active ? "var(--green3)" : "var(--bg)",
+                                  color:      active ? "var(--green)"  : "var(--text3)",
+                                }}
+                                onClick={()=>togglePerm(pk, col.field)}
+                              >
+                                {active ? "✓" : "✗"}
+                              </button>
+                            );
+                          })}
                         </React.Fragment>
                       );
                     })}
@@ -1159,6 +1204,7 @@ function UsrPage({users,setUsers,currentUser,showToast,audit}) {
                 </div>
               </>
             )}
+
             <div style={{height:10}}/>
             <button className="save-btn" onClick={save}>حفظ</button>
           </div>
