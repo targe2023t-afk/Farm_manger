@@ -1,3 +1,4 @@
+web application/stitch/projects/5953041463478609836/screens/8376920128036887547
 // v6.4 — Farmy App — Arabic permissions + dashboard fix
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./config/supabase";
