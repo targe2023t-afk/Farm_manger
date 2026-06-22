@@ -1,11 +1,26 @@
+web application/stitch/projects/5953041463478609836/screens/323dc075480c4c27bd4fd9f36d3203d8
 {
   "short_name": "Farmy",
   "name": "Farmy - إدارة المزرعة",
   "description": "تطبيق إدارة ذكية لمزرعتك - تتبع المصروفات والإيرادات والمخزن والعمالة",
   "icons": [
-    { "src": "favicon.ico", "sizes": "64x64 32x32 24x24 16x16", "type": "image/x-icon" },
-    { "src": "logo192.png", "type": "image/png", "sizes": "192x192", "purpose": "any maskable" },
-    { "src": "logo512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    }
   ],
   "start_url": ".",
   "display": "standalone",
@@ -14,5 +29,13 @@
   "orientation": "portrait",
   "scope": "/",
   "lang": "ar",
-  "dir": "rtl"
+  "dir": "rtl",
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=com.farmy.app",
+      "id": "com.farmy.app"
+    }
+  ],
+  "prefer_related_applications": false
 }
